@@ -1,12 +1,95 @@
 
+extern crate regex;
+
 use std::borrow::Cow;
 use std::ops::Range;
+use self::regex::Regex;
+use super::Protocol;
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq)]
+struct TokenRange<Idx> {
+    start: Idx,
+    end: Idx,
+}
+
+impl<T> Into<Range<T>> for TokenRange<T> {
+    fn into(self) -> Range<T> {
+        Range { start: self.start, end: self.end }
+    }
+}
+
+impl<T> From<Range<T>> for TokenRange<T> {
+    fn from(range: Range<T>) -> TokenRange<T> {
+        TokenRange { start: range.start, end: range.end }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq)]
 struct Token<'a> {
     ty: TokenType,
     text: &'a str,
-    range: Range<usize>,
+    range: TokenRange<usize>,
+}
+
+impl<'a> Token<'a> {
+    fn comment_contents(&self) -> Cow<'a, str> {
+        fn range_comment_contents(s: &str) -> Cow<str> {
+            let mut contents = String::new();
+            let first_regex = Regex::new(r"^\s*(\*+(\s+))?").unwrap();
+            let rest_regex = Regex::new(r"^\s*(\*+)?").unwrap();
+            let mut indent = None;
+
+            for line in s.lines() {
+                // Skip blank lines at the beginning.
+                if indent.is_none() && line.trim().is_empty() {
+                    continue;
+                }
+                let mut trimmed_line = line;
+                if let Some(indent) = indent {
+                    if let Some(captures) = rest_regex.captures(line) {
+                        // Trim up to and including the star.
+                        let (_, matched_end) = captures.pos(0).unwrap();
+                        trimmed_line = &line[matched_end..line.len()];
+
+                        // Trim whitespace after the star.
+                        let index = trimmed_line.as_bytes().iter().enumerate().position(|(i, &b)|
+                            !is_ascii_whitespace(b) || i >= indent
+                        ).unwrap_or(trimmed_line.len());
+                        trimmed_line = &trimmed_line[index..trimmed_line.len()];
+                    }
+                } else {
+                    // Trim star and all whitespace on the first line of the commnent.
+                    // Use it to determine how much whitespace to remove after the star on
+                    // subsequent lines.
+                    if let Some(captures) = first_regex.captures(line) {
+                        let (_, matched_end) = captures.pos(0).unwrap();
+                        trimmed_line = &line[matched_end..line.len()];
+
+                        match captures.pos(2) {
+                            Some((start, end)) => indent = Some(end - start),
+                            _ => indent = Some(0),
+                        }
+                    }
+                }
+                trimmed_line = trimmed_line.trim_right();
+
+                contents.push_str(trimmed_line);
+                contents.push('\n');
+            }
+            let trailing_whitespace = contents.as_bytes().iter()
+                .rev().take_while(|&&b| is_ascii_whitespace(b)).count();
+            let len = contents.len(); // borrow checker workaround
+            contents.truncate(len - trailing_whitespace);
+            Cow::Owned(contents)
+        }
+
+        match self.ty {
+            TokenType::LineComment => Cow::Borrowed(&self.text[2..self.text.len()]),
+            TokenType::RangeComment => range_comment_contents(&self.text[2..self.text.len()-2]),
+            TokenType::DocComment => range_comment_contents(&self.text[3..self.text.len()-2]),
+            _ => panic!(),
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -14,6 +97,9 @@ enum TokenType {
     Ident,
 
     Protocol,
+    Import,
+    Idl,
+    Schema,
     Null,
     Boolean,
     Int,
@@ -28,10 +114,22 @@ enum TokenType {
     Enum,
     Fixed,
 
+    LParen,
+    RParen,
     LBrace,
     RBrace,
-    Comma,
+    LBracket,
+    RBracket,
+    Colon,
     Semi,
+    Comma,
+    At,
+    Equals,
+    Dot,
+    Hyphen,
+    LAngle,
+    RAngle,
+    Backquote,
 
     RangeComment,
     DocComment,
@@ -43,6 +141,9 @@ impl TokenType {
     fn alphanumeric_token_from_str(s: &str) -> TokenType {
         match s {
             "protocol" => TokenType::Protocol,
+            "import" => TokenType::Import,
+            "idl" => TokenType::Idl,
+            "schema" => TokenType::Schema,
             "null" => TokenType::Null,
             "boolean" => TokenType::Boolean,
             "int" => TokenType::Int,
@@ -83,14 +184,42 @@ fn is_crlf(c: u8) -> bool {
 #[derive(Debug, Copy, Clone)]
 struct Lexer<'a> {
     src: &'a str,
+    skip_whitespace: bool,
+    skip_comments: bool,
     index: usize,
+
     line: usize,
     column: usize,
+    last_doc_comment: Option<Token<'a>>,
 }
 
 impl<'a> Lexer<'a> {
     pub fn new(src: &'a str) -> Lexer {
-        Lexer { src: src, index: 0, line: 1, column: 1 }
+        Lexer {
+            src: src,
+            skip_whitespace: false,
+            skip_comments: false,
+            index: 0,
+            line: 1,
+            column: 1,
+            last_doc_comment: None
+        }
+    }
+
+    pub fn skip_whitespace(&self) -> bool {
+        self.skip_whitespace
+    }
+
+    pub fn set_skip_whitespace(&mut self, skip: bool) {
+        self.skip_whitespace = skip;
+    }
+
+    pub fn skip_comments(&self) -> bool {
+        self.skip_comments
+    }
+
+    pub fn set_skip_comments(&mut self, skip: bool) {
+        self.skip_comments = skip;
     }
 
     pub fn index(&self) -> usize {
@@ -104,26 +233,34 @@ impl<'a> Lexer<'a> {
     pub fn column(&self) -> usize {
         self.column
     }
-}
 
-#[derive(Debug)]
-enum ErrorKind {
-    UnexpectedCharacter,
-    UnterminatedComment,
-}
+    pub fn last_doc_comment(&self) -> Option<Token<'a>> {
+        self.last_doc_comment
+    }
 
-#[derive(Debug)]
-struct Error {
-    kind: ErrorKind
-}
+    pub fn clear_last_doc_comment(&mut self) {
+        self.last_doc_comment = None;
+    }
 
-// I knew how to implement a lexer, but I did skim this example presented as a fast lexer:
-// http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/lexInCpp.html
-// linked from the bottom of http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/Lexing.html
-impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<Token<'a>, Error>;
+    pub fn expect_token_type(&mut self, ty: TokenType) -> Result<Token<'a>, Error> {
+        match self.next() {
+            Some(Ok(token)) => {
+                if token.ty == ty {
+                    Ok(token)
+                } else {
+                    Err(Error { kind: ErrorKind::UnexpectedToken })
+                }
+            },
+            Some(err @ Err(_)) => err,
+            None => Err(Error { kind: ErrorKind::UnexpectedEnd }),
+        }
+    }
 
-    fn next(&mut self) -> Option<Result<Token<'a>, Error>> {
+    // I knew how to implement a lexer, but I did skim this example presented as a fast lexer:
+    // http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/lexInCpp.html
+    // linked from the bottom of http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/Lexing.html
+    // https://github.com/apache/avro/blob/eb31746cd5efd5e2c9c57780a651afaccd5cfe06/lang/java/compiler/src/main/javacc/org/apache/avro/compiler/idl/idl.jj
+    fn next_internal(&mut self) -> Option<Result<Token<'a>, Error>> {
         let bytes = self.src.as_bytes();
         let start = self.index;
 
@@ -135,14 +272,26 @@ impl<'a> Iterator for Lexer<'a> {
         self.index += 1;
 
         let token = |ty, this: &mut Lexer<'a>| Some(Ok(Token {
-            ty: ty, text: &this.src[start..this.index], range: start..this.index
+            ty: ty, text: &this.src[start..this.index], range: (start..this.index).into()
         }));
 
         match c {
+            b'(' => return token(TokenType::LParen, self),
+            b')' => return token(TokenType::RParen, self),
             b'{' => return token(TokenType::LBrace, self),
             b'}' => return token(TokenType::RBrace, self),
-            b',' => return token(TokenType::Comma, self),
+            b'[' => return token(TokenType::LBracket, self),
+            b']' => return token(TokenType::RBracket, self),
+            b':' => return token(TokenType::Colon, self),
             b';' => return token(TokenType::Semi, self),
+            b',' => return token(TokenType::Comma, self),
+            b'@' => return token(TokenType::At, self),
+            b'=' => return token(TokenType::Equals, self),
+            b'.' => return token(TokenType::Dot, self),
+            b'-' => return token(TokenType::Hyphen, self),
+            b'<' => return token(TokenType::LAngle, self),
+            b'>' => return token(TokenType::RAngle, self),
+            b'`' => return token(TokenType::Backquote, self),
 
             b' ' | b'\t' | b'\r' | b'\n' => {
                 while self.index < bytes.len() && is_ascii_whitespace(bytes[self.index]) {
@@ -157,7 +306,11 @@ impl<'a> Iterator for Lexer<'a> {
                 }
                 let token_text = &self.src[start..self.index];
                 let token_ty = TokenType::alphanumeric_token_from_str(token_text);
-                return Some(Ok(Token { ty: token_ty, text: token_text, range: start..self.index }));
+                return Some(Ok(Token {
+                    ty: token_ty,
+                    text: token_text,
+                    range: (start..self.index).into()
+                }));
             },
 
             // TODO: escaped identifiers
@@ -200,6 +353,55 @@ impl<'a> Iterator for Lexer<'a> {
     }
 }
 
+#[derive(Debug)]
+enum ErrorKind {
+    UnexpectedCharacter,
+    UnterminatedComment,
+    UnexpectedEnd,
+    UnexpectedToken,
+}
+
+#[derive(Debug)]
+struct Error {
+    kind: ErrorKind,
+}
+
+impl<'a> Iterator for Lexer<'a> {
+    type Item = Result<Token<'a>, Error>;
+
+    fn next(&mut self) -> Option<Result<Token<'a>, Error>> {
+        let mut res;
+        loop {
+            res = self.next_internal();
+            if let Some(Ok(token @ Token { .. })) = res {
+                if token.ty == TokenType::DocComment {
+                    self.last_doc_comment = Some(token);
+                }
+                match token.ty {
+                    TokenType::Whitespace if self.skip_whitespace => continue,
+                    TokenType::RangeComment |
+                    TokenType::LineComment |
+                    TokenType::DocComment if self.skip_comments => continue,
+                    _ => {}
+                }
+                if self.skip_whitespace && token.ty == TokenType::Whitespace {
+                    continue;
+                }
+                if self.skip_comments {
+                    match token.ty {
+                        TokenType::RangeComment |
+                        TokenType::LineComment |
+                        TokenType::DocComment => continue,
+                        _ => {}
+                    }
+                }
+            }
+            break;
+        }
+        res
+    }
+}
+
 #[test]
 fn test_enum() {
     let lexer = Lexer::new(
@@ -207,8 +409,8 @@ fn test_enum() {
   SPADES, DIAMONDS
 }");
     let tokens = lexer.map(|r| {
-            let t = r.unwrap();
-            (t.ty, t.text)
+        let t = r.unwrap();
+        (t.ty, t.text)
     }).collect::<Vec<_>>();
     assert_eq!(&tokens[..], &[
         (TokenType::Enum, "enum"),
@@ -251,3 +453,55 @@ enum/*range comment*/Suit2 { // a line comment
     ]);
 }
 
+//fn parse_annotation(lexer: &mut Lexer) {
+//}
+
+fn parse_idl(src: &str) -> Result<Protocol, Error> {
+    let mut lexer = Lexer::new(src);
+    lexer.set_skip_whitespace(true);
+    lexer.set_skip_comments(true);
+
+    // TODO: annotations
+
+    try!(lexer.expect_token_type(TokenType::Protocol));
+    let name_token = try!(lexer.expect_token_type(TokenType::Ident));
+    let mut protocol = Protocol {
+        name: Cow::Borrowed(name_token.text),
+        doc: lexer.last_doc_comment().map(|t| t.comment_contents()),
+        tys: vec![],
+        messages: vec![]
+    };
+    try!(lexer.expect_token_type(TokenType::LBrace));
+
+    try!(lexer.expect_token_type(TokenType::RBrace));
+
+    Ok(protocol)
+}
+
+#[test]
+fn test_parse_protocol() {
+    let res = parse_idl("
+/** a test IDL file */
+protocol Test1 {
+}");
+    let protocol = res.unwrap();
+    assert_eq!(protocol.name, "Test1");
+    assert_eq!(protocol.doc, Some(Cow::Borrowed("a test IDL file")));
+}
+
+#[test]
+fn test_parse_doc_comment() {
+    let res = parse_idl(r#"
+/**
+ * Here's some example code:
+ *
+ *   print("something")
+ */
+protocol Test1 {
+}"#);
+    let protocol = res.unwrap();
+    assert_eq!(protocol.name, "Test1");
+    assert_eq!(protocol.doc, Some(Cow::Borrowed(
+        "Here's some example code:\n\n  print(\"something\")"
+    )));
+}

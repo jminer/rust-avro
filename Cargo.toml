@@ -2,3 +2,6 @@
 name = "avro"
 version = "0.1.0"
 authors = ["Jordan Miner <jminer7@gmail.com>"]
+
+[dependencies]
+regex = "0.1.41"
