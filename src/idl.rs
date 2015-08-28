@@ -260,6 +260,17 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    pub fn try_consume(&mut self, ty: TokenType) -> bool {
+        let mut copy = *self;
+        match copy.next() {
+            Some(Ok(token)) if token.ty == ty => {
+                self.next();
+                true
+            },
+            _ => false,
+        }
+    }
+
     pub fn expect_next(&mut self) -> Result<Token<'a>, Error> {
         match self.next() {
             Some(token @ Ok(_)) => token,
@@ -487,17 +498,17 @@ fn parse_type<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Error> {
             let mut tys = vec![];
             let mut first = true;
             loop {
-                if !first {
-                    try!(lexer.expect_and_consume(TokenType::Comma));
-                    first = false;
-                }
                 match lexer.clone().expect_next() {
                     Ok(Token { ty: TokenType::RBrace, .. }) => break,
                     Ok(_) => {
+                        if !first {
+                            try!(lexer.expect_and_consume(TokenType::Comma));
+                        }
                         tys.push(try!(parse_type(lexer)));
                     },
                     Err(err) => return Err(err),
                 };
+                first = false;
             }
             try!(lexer.expect_and_consume(TokenType::RBrace));
             Ok(Schema::Union { tys: tys })
@@ -650,6 +661,7 @@ protocol Test1 {
     }
     error Third {
         map<boolean> enabledFeatures;
+        union { int, boolean, string } bar;
     }
 }"#);
     let protocol = res.unwrap();
@@ -677,7 +689,7 @@ protocol Test1 {
         assert_eq!(r.doc, Some(Cow::Borrowed("Comment two.")));
         assert_eq!(r.fields[0].name, Cow::Borrowed("nums"));
         assert_eq!(r.fields[0].doc, None);
-        if let Schema::Array { items: ref items } = r.fields[0].ty {
+        if let Schema::Array { ref items } = r.fields[0].ty {
             assert_eq!(**items, Schema::Long);
         } else {
             panic!("wrong type");
@@ -692,8 +704,15 @@ protocol Test1 {
         assert_eq!(r.doc, None);
         assert_eq!(r.fields[0].name, Cow::Borrowed("enabledFeatures"));
         assert_eq!(r.fields[0].doc, None);
-        if let Schema::Map { values: ref values } = r.fields[0].ty {
+        if let Schema::Map { ref values } = r.fields[0].ty {
             assert_eq!(**values, Schema::Boolean);
+        } else {
+            panic!("wrong type");
+        }
+        assert_eq!(r.fields[1].name, Cow::Borrowed("bar"));
+        assert_eq!(r.fields[1].doc, None);
+        if let Schema::Union { ref tys } = r.fields[1].ty {
+            assert_eq!(tys, &[Schema::Int, Schema::Boolean, Schema::String]);
         } else {
             panic!("wrong type");
         }
