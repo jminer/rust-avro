@@ -4,9 +4,11 @@ use std::collections::HashMap;
 
 mod idl;
 
+pub use idl::Lexer;
+pub use idl::parse_idl;
 
-
-enum Value<'a> {
+#[derive(Debug, Clone, PartialEq)]
+pub enum Value<'a> {
 	Null,
 	Boolean,
 	Int(i32),
@@ -23,31 +25,36 @@ enum Value<'a> {
 
 }
 
-struct Field<'a> {
-	name: Cow<'a, str>,
-	doc: Option<Cow<'a, str>>,
-	ty: Schema<'a>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct Field<'a> {
+	pub name: Cow<'a, str>,
+	pub doc: Option<Cow<'a, str>>,
+	pub ty: Schema<'a>,
 }
 
-struct RecordSchema<'a> {
-	name: Cow<'a, str>,
-	doc: Option<Cow<'a, str>>,
-	fields: Vec<Field<'a>>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordSchema<'a> {
+	pub name: Cow<'a, str>,
+	pub doc: Option<Cow<'a, str>>,
+	pub fields: Vec<Field<'a>>,
 }
 
-struct EnumSchema<'a> {
-	name: Cow<'a, str>,
-	doc: Option<Cow<'a, str>>,
-	symbols: Vec<Cow<'a, str>>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct EnumSchema<'a> {
+	pub name: Cow<'a, str>,
+	pub doc: Option<Cow<'a, str>>,
+	pub symbols: Vec<Cow<'a, str>>,
 }
 
-struct FixedSchema<'a> {
-	name: Cow<'a, str>,
-	doc: Option<Cow<'a, str>>,
-	size: usize,
+#[derive(Debug, Clone, PartialEq)]
+pub struct FixedSchema<'a> {
+	pub name: Cow<'a, str>,
+	pub doc: Option<Cow<'a, str>>,
+	pub size: usize,
 }
 
-enum Schema<'a> {
+#[derive(Debug, Clone, PartialEq)]
+pub enum Schema<'a> {
 	Null,
 	Boolean,
 	Int,
@@ -71,14 +78,16 @@ enum Schema<'a> {
 	Fixed(Box<FixedSchema<'a>>),
 }
 
-struct Message<'a> {
-	name: Cow<'a, str>,
-	doc: Option<Cow<'a, str>>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct Message<'a> {
+	pub name: Cow<'a, str>,
+	pub doc: Option<Cow<'a, str>>,
 }
 
-struct Protocol<'a> {
-    name: Cow<'a, str>,
-	doc: Option<Cow<'a, str>>,
-    tys: Vec<Schema<'a>>,
-    messages: Vec<Message<'a>>,
+#[derive(Debug, Clone, PartialEq)]
+pub struct Protocol<'a> {
+    pub name: Cow<'a, str>,
+	pub doc: Option<Cow<'a, str>>,
+    pub tys: Vec<Schema<'a>>,
+    pub messages: Vec<Message<'a>>,
 }

@@ -4,10 +4,10 @@ extern crate regex;
 use std::borrow::Cow;
 use std::ops::Range;
 use self::regex::Regex;
-use super::Protocol;
+use super::{Protocol, Schema, Field, RecordSchema};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
-struct TokenRange<Idx> {
+pub struct TokenRange<Idx> {
     start: Idx,
     end: Idx,
 }
@@ -25,7 +25,7 @@ impl<T> From<Range<T>> for TokenRange<T> {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
-struct Token<'a> {
+pub struct Token<'a> {
     ty: TokenType,
     text: &'a str,
     range: TokenRange<usize>,
@@ -93,7 +93,7 @@ impl<'a> Token<'a> {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
-enum TokenType {
+pub enum TokenType {
     Ident,
 
     Protocol,
@@ -109,6 +109,8 @@ enum TokenType {
     Bytes,
     String,
     Array,
+    Map,
+    Union,
     Record,
     Error,
     Enum,
@@ -153,6 +155,8 @@ impl TokenType {
             "bytes" => TokenType::Bytes,
             "string" => TokenType::String,
             "array" => TokenType::Array,
+            "map" => TokenType::Map,
+            "union" => TokenType::Union,
             "record" => TokenType::Record,
             "error" => TokenType::Error,
             "enum" => TokenType::Enum,
@@ -182,7 +186,7 @@ fn is_crlf(c: u8) -> bool {
 }
 
 #[derive(Debug, Copy, Clone)]
-struct Lexer<'a> {
+pub struct Lexer<'a> {
     src: &'a str,
     skip_whitespace: bool,
     skip_comments: bool,
@@ -242,7 +246,7 @@ impl<'a> Lexer<'a> {
         self.last_doc_comment = None;
     }
 
-    pub fn expect_token_type(&mut self, ty: TokenType) -> Result<Token<'a>, Error> {
+    pub fn expect_and_consume(&mut self, ty: TokenType) -> Result<Token<'a>, Error> {
         match self.next() {
             Some(Ok(token)) => {
                 if token.ty == ty {
@@ -256,11 +260,19 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    pub fn expect_next(&mut self) -> Result<Token<'a>, Error> {
+        match self.next() {
+            Some(token @ Ok(_)) => token,
+            Some(err @ Err(_)) => err,
+            None => Err(Error { kind: ErrorKind::UnexpectedEnd }),
+        }
+    }
+
     // I knew how to implement a lexer, but I did skim this example presented as a fast lexer:
     // http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/lexInCpp.html
     // linked from the bottom of http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/Lexing.html
     // https://github.com/apache/avro/blob/eb31746cd5efd5e2c9c57780a651afaccd5cfe06/lang/java/compiler/src/main/javacc/org/apache/avro/compiler/idl/idl.jj
-    fn next_internal(&mut self) -> Option<Result<Token<'a>, Error>> {
+    fn lex(&mut self) -> Option<Result<Token<'a>, Error>> {
         let bytes = self.src.as_bytes();
         let start = self.index;
 
@@ -354,7 +366,7 @@ impl<'a> Lexer<'a> {
 }
 
 #[derive(Debug)]
-enum ErrorKind {
+pub enum ErrorKind {
     UnexpectedCharacter,
     UnterminatedComment,
     UnexpectedEnd,
@@ -362,8 +374,8 @@ enum ErrorKind {
 }
 
 #[derive(Debug)]
-struct Error {
-    kind: ErrorKind,
+pub struct Error {
+    pub kind: ErrorKind,
 }
 
 impl<'a> Iterator for Lexer<'a> {
@@ -372,7 +384,7 @@ impl<'a> Iterator for Lexer<'a> {
     fn next(&mut self) -> Option<Result<Token<'a>, Error>> {
         let mut res;
         loop {
-            res = self.next_internal();
+            res = self.lex();
             if let Some(Ok(token @ Token { .. })) = res {
                 if token.ty == TokenType::DocComment {
                     self.last_doc_comment = Some(token);
@@ -456,26 +468,142 @@ enum/*range comment*/Suit2 { // a line comment
 //fn parse_annotation(lexer: &mut Lexer) {
 //}
 
-fn parse_idl(src: &str) -> Result<Protocol, Error> {
+fn parse_type<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Error> {
+    match lexer.expect_next() {
+        Ok(Token { ty: TokenType::Array, .. }) => {
+            try!(lexer.expect_and_consume(TokenType::LAngle));
+            let ty = try!(parse_type(lexer));
+            try!(lexer.expect_and_consume(TokenType::RAngle));
+            Ok(Schema::Array { items: Box::new(ty) })
+        },
+        Ok(Token { ty: TokenType::Map, .. }) => {
+            try!(lexer.expect_and_consume(TokenType::LAngle));
+            let ty = try!(parse_type(lexer));
+            try!(lexer.expect_and_consume(TokenType::RAngle));
+            Ok(Schema::Map { values: Box::new(ty) })
+        },
+        Ok(Token { ty: TokenType::Union, .. }) => {
+            try!(lexer.expect_and_consume(TokenType::LBrace));
+            let mut tys = vec![];
+            let mut first = true;
+            loop {
+                if !first {
+                    try!(lexer.expect_and_consume(TokenType::Comma));
+                    first = false;
+                }
+                match lexer.clone().expect_next() {
+                    Ok(Token { ty: TokenType::RBrace, .. }) => break,
+                    Ok(_) => {
+                        tys.push(try!(parse_type(lexer)));
+                    },
+                    Err(err) => return Err(err),
+                };
+            }
+            try!(lexer.expect_and_consume(TokenType::RBrace));
+            Ok(Schema::Union { tys: tys })
+        },
+        Ok(Token { ty: TokenType::Boolean, .. }) => Ok(Schema::Boolean),
+        Ok(Token { ty: TokenType::Bytes, .. }) => Ok(Schema::Bytes),
+        Ok(Token { ty: TokenType::Int, .. }) => Ok(Schema::Int),
+        Ok(Token { ty: TokenType::String, .. }) => Ok(Schema::String),
+        Ok(Token { ty: TokenType::Float, .. }) => Ok(Schema::Float),
+        Ok(Token { ty: TokenType::Double, .. }) => Ok(Schema::Double),
+        Ok(Token { ty: TokenType::Long, .. }) => Ok(Schema::Long),
+        Ok(Token { ty: TokenType::Null, .. }) => Ok(Schema::Null),
+        // TODO: need to handle reference types
+        Ok(Token { ty: TokenType::Ident, .. }) => Err(Error { kind: ErrorKind::UnexpectedToken }),
+        Err(err) => Err(err),
+        _ => Err(Error { kind: ErrorKind::UnexpectedToken }),
+    }
+}
+
+fn parse_field<'a>(lexer: &mut Lexer<'a>) -> Result<Field<'a>, Error> {
+    lexer.clear_last_doc_comment();
+    let ty = try!(parse_type(lexer));
+    let doc = lexer.last_doc_comment().map(|t| t.comment_contents());
+    let name = try!(lexer.expect_and_consume(TokenType::Ident));
+    // TODO: parse variable names and defaults
+    try!(lexer.expect_and_consume(TokenType::Semi));
+
+    Ok(Field {
+        name: Cow::Borrowed(name.text),
+        doc: doc,
+        ty: ty,
+    })
+}
+
+fn parse_record<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, Error> {
+    lexer.clear_last_doc_comment();
+    let error = match lexer.expect_next() {
+        Ok(Token { ty: TokenType::Record, .. }) => false,
+        Ok(Token { ty: TokenType::Error, .. }) => true,
+        Err(err) => return Err(err),
+        _ => return Err(Error { kind: ErrorKind::UnexpectedToken }),
+    };
+    let doc = lexer.last_doc_comment().map(|t| t.comment_contents());
+    let name_token = try!(lexer.expect_and_consume(TokenType::Ident));
+    try!(lexer.expect_and_consume(TokenType::LBrace));
+
+    let mut fields = vec![];
+    loop {
+        match lexer.clone().expect_next() {
+            Ok(Token { ty: TokenType::RBrace, .. }) => break,
+            Ok(_) => fields.push(try!(parse_field(lexer))),
+            Err(err) => return Err(err),
+        };
+    }
+
+    try!(lexer.expect_and_consume(TokenType::RBrace));
+
+    let data = Box::new(RecordSchema {
+        name: Cow::Borrowed(name_token.text),
+        doc: doc,
+        fields: fields,
+    });
+    Ok(if error { Schema::Error(data) } else { Schema::Record(data) })
+}
+
+fn parse_enum<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Error> {
+    unimplemented!()
+}
+
+fn parse_fixed<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Error> {
+    unimplemented!()
+}
+
+pub fn parse_idl(src: &str) -> Result<Protocol, Error> {
     let mut lexer = Lexer::new(src);
     lexer.set_skip_whitespace(true);
     lexer.set_skip_comments(true);
 
     // TODO: annotations
 
-    try!(lexer.expect_token_type(TokenType::Protocol));
-    let name_token = try!(lexer.expect_token_type(TokenType::Ident));
-    let mut protocol = Protocol {
+    try!(lexer.expect_and_consume(TokenType::Protocol));
+    let doc = lexer.last_doc_comment().map(|t| t.comment_contents());
+    let name_token = try!(lexer.expect_and_consume(TokenType::Ident));
+    try!(lexer.expect_and_consume(TokenType::LBrace));
+
+    let mut tys = vec![];
+    loop {
+        match lexer.clone().expect_next() {
+            Ok(Token { ty: TokenType::RBrace, .. }) => break,
+            Ok(Token { ty: TokenType::Record, .. }) |
+            Ok(Token { ty: TokenType::Error, .. }) => tys.push(try!(parse_record(&mut lexer))),
+            Ok(Token { ty: TokenType::Enum, .. }) => tys.push(try!(parse_enum(&mut lexer))),
+            Ok(Token { ty: TokenType::Fixed, .. }) => tys.push(try!(parse_fixed(&mut lexer))),
+            Err(err) => return Err(err),
+            _ => return Err(Error { kind: ErrorKind::UnexpectedToken }),
+        };
+    }
+
+    try!(lexer.expect_and_consume(TokenType::RBrace));
+
+    Ok(Protocol {
         name: Cow::Borrowed(name_token.text),
-        doc: lexer.last_doc_comment().map(|t| t.comment_contents()),
-        tys: vec![],
+        doc: doc,
+        tys: tys,
         messages: vec![]
-    };
-    try!(lexer.expect_token_type(TokenType::LBrace));
-
-    try!(lexer.expect_token_type(TokenType::RBrace));
-
-    Ok(protocol)
+    })
 }
 
 #[test]
@@ -504,4 +632,72 @@ protocol Test1 {
     assert_eq!(protocol.doc, Some(Cow::Borrowed(
         "Here's some example code:\n\n  print(\"something\")"
     )));
+}
+
+#[test]
+fn test_parse_record() {
+    let res = parse_idl(r#"
+/** Comment one. */
+protocol Test1 {
+    record First {
+        int i;
+        /** banana */
+        string foo;
+    }
+    /** Comment two. */
+    record Second {
+        array<long> nums;
+    }
+    error Third {
+        map<boolean> enabledFeatures;
+    }
+}"#);
+    let protocol = res.unwrap();
+    assert_eq!(protocol.name, "Test1");
+    assert_eq!(protocol.doc, Some(Cow::Borrowed("Comment one.")));
+    assert_eq!(protocol.tys.len(), 3);
+
+    let first = &protocol.tys[0];
+    if let &Schema::Record(ref r) = first {
+        assert_eq!(r.name, Cow::Borrowed("First"));
+        assert_eq!(r.doc, None);
+        assert_eq!(r.fields[0].name, Cow::Borrowed("i"));
+        assert_eq!(r.fields[0].doc, None);
+        assert_eq!(r.fields[0].ty, Schema::Int);
+        assert_eq!(r.fields[1].name, Cow::Borrowed("foo"));
+        assert_eq!(r.fields[1].doc, Some(Cow::Borrowed("banana")));
+        assert_eq!(r.fields[1].ty, Schema::String);
+    } else {
+        panic!("wrong type");
+    }
+
+    let second = &protocol.tys[1];
+    if let &Schema::Record(ref r) = second {
+        assert_eq!(r.name, Cow::Borrowed("Second"));
+        assert_eq!(r.doc, Some(Cow::Borrowed("Comment two.")));
+        assert_eq!(r.fields[0].name, Cow::Borrowed("nums"));
+        assert_eq!(r.fields[0].doc, None);
+        if let Schema::Array { items: ref items } = r.fields[0].ty {
+            assert_eq!(**items, Schema::Long);
+        } else {
+            panic!("wrong type");
+        }
+    } else {
+        panic!("wrong type");
+    }
+
+    let third = &protocol.tys[2];
+    if let &Schema::Error(ref r) = third {
+        assert_eq!(r.name, Cow::Borrowed("Third"));
+        assert_eq!(r.doc, None);
+        assert_eq!(r.fields[0].name, Cow::Borrowed("enabledFeatures"));
+        assert_eq!(r.fields[0].doc, None);
+        if let Schema::Map { values: ref values } = r.fields[0].ty {
+            assert_eq!(**values, Schema::Boolean);
+        } else {
+            panic!("wrong type");
+        }
+    } else {
+        panic!("wrong type");
+    }
 }
