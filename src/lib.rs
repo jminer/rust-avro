@@ -48,10 +48,16 @@ pub struct RecordSchema<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct EnumSymbol<'a> {
+	pub name: Cow<'a, str>,
+	pub doc: Option<Cow<'a, str>>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct EnumSchema<'a> {
 	pub name: Cow<'a, str>,
 	pub doc: Option<Cow<'a, str>>,
-	pub symbols: Vec<Cow<'a, str>>,
+	pub symbols: Vec<EnumSymbol<'a>>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

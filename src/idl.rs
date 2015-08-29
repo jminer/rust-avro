@@ -12,7 +12,7 @@ extern crate regex;
 use std::borrow::Cow;
 use std::ops::Range;
 use self::regex::Regex;
-use super::{Protocol, Schema, Field, RecordSchema};
+use super::{Protocol, Schema, Field, RecordSchema, EnumSymbol, EnumSchema};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct TokenRange<Idx> {
@@ -582,8 +582,39 @@ fn parse_record<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, Error> {
     Ok(if error { Schema::Error(data) } else { Schema::Record(data) })
 }
 
-fn parse_enum<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Error> {
-    unimplemented!()
+fn parse_enum<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, Error> {
+    lexer.clear_last_doc_comment();
+    try!(lexer.expect_and_consume(TokenType::Enum));
+    let doc = lexer.last_doc_comment().map(|t| t.comment_contents());
+    let name_token = try!(lexer.expect_and_consume(TokenType::Ident));
+    try!(lexer.expect_and_consume(TokenType::LBrace));
+
+    let mut symbols = vec![];
+    let mut first = true;
+    loop {
+        match lexer.clone().expect_next() {
+            Ok(Token { ty: TokenType::RBrace, .. }) => break,
+            Ok(_) => {
+                if !first {
+                    try!(lexer.expect_and_consume(TokenType::Comma));
+                }
+                lexer.clear_last_doc_comment();
+                let sym_name = try!(lexer.expect_and_consume(TokenType::Ident)).text;
+                let doc = lexer.last_doc_comment().map(|t| t.comment_contents());
+                symbols.push(EnumSymbol { name: Cow::Borrowed(sym_name), doc: doc });
+            },
+            Err(err) => return Err(err),
+        };
+        first = false;
+    }
+
+    try!(lexer.expect_and_consume(TokenType::RBrace));
+
+    Ok(Schema::Enum(Box::new(EnumSchema {
+        name: Cow::Borrowed(name_token.text),
+        doc: doc,
+        symbols: symbols,
+    })))
 }
 
 fn parse_fixed<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Error> {
@@ -727,4 +758,58 @@ protocol Test1 {
     } else {
         panic!("wrong type");
     }
+}
+
+#[test]
+fn test_parse_enum() {
+    let res = parse_idl(r#"
+protocol TestEnum {
+    /** Only two values */
+    enum TimePeriods {
+        AM, PM
+    }
+    enum Seasons {
+        SPRING,
+        // This is ignored.
+        SUMMER,
+        FALL,
+        /**
+         * Winter is coming.
+         */
+        WINTER
+    }
+}"#);
+    let protocol = res.unwrap();
+    assert_eq!(protocol.name, "TestEnum");
+    assert_eq!(protocol.tys.len(), 2);
+
+    let first = &protocol.tys[0];
+    if let &Schema::Enum(ref r) = first {
+        assert_eq!(r.name, Cow::Borrowed("TimePeriods"));
+        assert_eq!(r.doc, Some(Cow::Borrowed("Only two values")));
+        assert_eq!(&r.symbols, &[
+            EnumSymbol { name: Cow::Borrowed("AM"), doc: None },
+            EnumSymbol { name: Cow::Borrowed("PM"), doc: None },
+        ]);
+    } else {
+        panic!("wrong type");
+    }
+
+    let second = &protocol.tys[1];
+    if let &Schema::Enum(ref r) = second {
+        assert_eq!(r.name, Cow::Borrowed("Seasons"));
+        assert_eq!(r.doc, None);
+        assert_eq!(&r.symbols, &[
+            EnumSymbol { name: Cow::Borrowed("SPRING"), doc: None },
+            EnumSymbol { name: Cow::Borrowed("SUMMER"), doc: None },
+            EnumSymbol { name: Cow::Borrowed("FALL"), doc: None },
+            EnumSymbol {
+                name: Cow::Borrowed("WINTER"),
+                doc: Some(Cow::Borrowed("Winter is coming."))
+            },
+        ]);
+    } else {
+        panic!("wrong type");
+    }
+
 }
