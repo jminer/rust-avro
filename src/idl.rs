@@ -254,17 +254,17 @@ impl<'a> Lexer<'a> {
         self.last_doc_comment = None;
     }
 
-    pub fn expect_and_consume(&mut self, ty: TokenType) -> Result<Token<'a>, Error> {
+    pub fn expect_and_consume(&mut self, ty: TokenType) -> Result<Token<'a>, IdlError> {
         match self.next() {
             Some(Ok(token)) => {
                 if token.ty == ty {
                     Ok(token)
                 } else {
-                    Err(Error { kind: ErrorKind::UnexpectedToken })
+                    Err(IdlError { kind: IdlErrorKind::UnexpectedToken })
                 }
             },
             Some(err @ Err(_)) => err,
-            None => Err(Error { kind: ErrorKind::UnexpectedEnd }),
+            None => Err(IdlError { kind: IdlErrorKind::UnexpectedEnd }),
         }
     }
 
@@ -279,11 +279,11 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    pub fn expect_next(&mut self) -> Result<Token<'a>, Error> {
+    pub fn expect_next(&mut self) -> Result<Token<'a>, IdlError> {
         match self.next() {
             Some(token @ Ok(_)) => token,
             Some(err @ Err(_)) => err,
-            None => Err(Error { kind: ErrorKind::UnexpectedEnd }),
+            None => Err(IdlError { kind: IdlErrorKind::UnexpectedEnd }),
         }
     }
 
@@ -291,7 +291,7 @@ impl<'a> Lexer<'a> {
     // http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/lexInCpp.html
     // linked from the bottom of http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/Lexing.html
     // https://github.com/apache/avro/blob/eb31746cd5efd5e2c9c57780a651afaccd5cfe06/lang/java/compiler/src/main/javacc/org/apache/avro/compiler/idl/idl.jj
-    fn lex(&mut self) -> Option<Result<Token<'a>, Error>> {
+    fn lex(&mut self) -> Option<Result<Token<'a>, IdlError>> {
         let bytes = self.src.as_bytes();
         let start = self.index;
 
@@ -356,7 +356,9 @@ impl<'a> Lexer<'a> {
                         loop {
                             self.index += 1;
                             if bytes.len() - self.index < 2 {
-                                return Some(Err(Error { kind: ErrorKind::UnterminatedComment }));
+                                return Some(Err(IdlError {
+                                        kind: IdlErrorKind::UnterminatedComment
+                                }));
                             }
                             if bytes[self.index + 1] == b'/' && bytes[self.index] == b'*' {
                                 self.index += 2;
@@ -375,17 +377,17 @@ impl<'a> Lexer<'a> {
                         }
                         return token(TokenType::LineComment, self);
                     },
-                    _ => return Some(Err(Error { kind: ErrorKind::UnexpectedCharacter }))
+                    _ => return Some(Err(IdlError { kind: IdlErrorKind::UnexpectedCharacter }))
                 };
             },
 
-            _ => Some(Err(Error { kind: ErrorKind::UnexpectedCharacter }))
+            _ => Some(Err(IdlError { kind: IdlErrorKind::UnexpectedCharacter }))
         }
     }
 }
 
 #[derive(Debug)]
-pub enum ErrorKind {
+pub enum IdlErrorKind {
     UnexpectedCharacter,
     UnterminatedComment,
     UnexpectedEnd,
@@ -393,14 +395,14 @@ pub enum ErrorKind {
 }
 
 #[derive(Debug)]
-pub struct Error {
-    pub kind: ErrorKind,
+pub struct IdlError {
+    pub kind: IdlErrorKind,
 }
 
 impl<'a> Iterator for Lexer<'a> {
-    type Item = Result<Token<'a>, Error>;
+    type Item = Result<Token<'a>, IdlError>;
 
-    fn next(&mut self) -> Option<Result<Token<'a>, Error>> {
+    fn next(&mut self) -> Option<Result<Token<'a>, IdlError>> {
         let mut res;
         loop {
             res = self.lex();
@@ -487,7 +489,7 @@ enum/*range comment*/Suit2 { // a line comment
 //fn parse_annotation(lexer: &mut Lexer) {
 //}
 
-fn parse_type<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Error> {
+fn parse_type<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, IdlError> {
     match lexer.expect_next() {
         Ok(Token { ty: TokenType::Array, .. }) => {
             try!(lexer.expect_and_consume(TokenType::LAngle));
@@ -530,13 +532,15 @@ fn parse_type<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Error> {
         Ok(Token { ty: TokenType::Long, .. }) => Ok(Schema::Long),
         Ok(Token { ty: TokenType::Null, .. }) => Ok(Schema::Null),
         // TODO: need to handle reference types
-        Ok(Token { ty: TokenType::Ident, .. }) => Err(Error { kind: ErrorKind::UnexpectedToken }),
+        Ok(Token { ty: TokenType::Ident, .. }) => Err(IdlError {
+                kind: IdlErrorKind::UnexpectedToken
+        }),
         Err(err) => Err(err),
-        _ => Err(Error { kind: ErrorKind::UnexpectedToken }),
+        _ => Err(IdlError { kind: IdlErrorKind::UnexpectedToken }),
     }
 }
 
-fn parse_field<'a>(lexer: &mut Lexer<'a>) -> Result<Field<'a>, Error> {
+fn parse_field<'a>(lexer: &mut Lexer<'a>) -> Result<Field<'a>, IdlError> {
     lexer.clear_last_doc_comment();
     let ty = try!(parse_type(lexer));
     let doc = lexer.last_doc_comment().map(|t| t.comment_contents());
@@ -551,13 +555,13 @@ fn parse_field<'a>(lexer: &mut Lexer<'a>) -> Result<Field<'a>, Error> {
     })
 }
 
-fn parse_record<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, Error> {
+fn parse_record<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, IdlError> {
     lexer.clear_last_doc_comment();
     let error = match lexer.expect_next() {
         Ok(Token { ty: TokenType::Record, .. }) => false,
         Ok(Token { ty: TokenType::Error, .. }) => true,
         Err(err) => return Err(err),
-        _ => return Err(Error { kind: ErrorKind::UnexpectedToken }),
+        _ => return Err(IdlError { kind: IdlErrorKind::UnexpectedToken }),
     };
     let doc = lexer.last_doc_comment().map(|t| t.comment_contents());
     let name_token = try!(lexer.expect_and_consume(TokenType::Ident));
@@ -582,7 +586,7 @@ fn parse_record<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, Error> {
     Ok(if error { Schema::Error(data) } else { Schema::Record(data) })
 }
 
-fn parse_enum<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, Error> {
+fn parse_enum<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, IdlError> {
     lexer.clear_last_doc_comment();
     try!(lexer.expect_and_consume(TokenType::Enum));
     let doc = lexer.last_doc_comment().map(|t| t.comment_contents());
@@ -617,11 +621,11 @@ fn parse_enum<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, Error> {
     })))
 }
 
-fn parse_fixed<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Error> {
+fn parse_fixed<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, IdlError> {
     unimplemented!()
 }
 
-pub fn parse_idl(src: &str) -> Result<Protocol, Error> {
+pub fn parse_idl(src: &str) -> Result<Protocol, IdlError> {
     let mut lexer = Lexer::new(src);
     lexer.set_skip_whitespace(true);
     lexer.set_skip_comments(true);
@@ -642,7 +646,7 @@ pub fn parse_idl(src: &str) -> Result<Protocol, Error> {
             Ok(Token { ty: TokenType::Enum, .. }) => tys.push(try!(parse_enum(&mut lexer))),
             Ok(Token { ty: TokenType::Fixed, .. }) => tys.push(try!(parse_fixed(&mut lexer))),
             Err(err) => return Err(err),
-            _ => return Err(Error { kind: ErrorKind::UnexpectedToken }),
+            _ => return Err(IdlError { kind: IdlErrorKind::UnexpectedToken }),
         };
     }
 
