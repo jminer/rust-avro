@@ -12,7 +12,7 @@ extern crate regex;
 use std::borrow::Cow;
 use std::ops::Range;
 use self::regex::Regex;
-use super::{Protocol, Schema, Field, RecordSchema, EnumSymbol, EnumSchema};
+use super::{Protocol, Schema, Field, RecordSchema, EnumSymbol, EnumSchema, FixedSchema};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct TokenRange<Idx> {
@@ -103,6 +103,7 @@ impl<'a> Token<'a> {
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum TokenType {
     Ident,
+    Integer,
 
     Protocol,
     Import,
@@ -185,6 +186,13 @@ fn is_ascii_whitespace(c: u8) -> bool {
 fn is_ascii_alphanumeric(c: u8) -> bool {
     match c {
         b'A' ... b'Z' | b'a' ... b'z' | b'0' ... b'9' | b'_' => true,
+        _ => false
+    }
+}
+
+fn is_ascii_digit(c: u8) -> bool {
+    match c {
+        b'0' ... b'9' => true,
         _ => false
     }
 }
@@ -342,6 +350,13 @@ impl<'a> Lexer<'a> {
                     text: token_text,
                     range: (start..self.index).into()
                 }));
+            },
+
+            b'0' ... b'9' => {
+                while self.index < bytes.len() && is_ascii_digit(bytes[self.index]) {
+                    self.index += 1;
+                }
+                return token(TokenType::Integer, self);
             },
 
             // TODO: escaped identifiers
@@ -621,8 +636,23 @@ fn parse_enum<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, IdlError> {
     })))
 }
 
-fn parse_fixed<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, IdlError> {
-    unimplemented!()
+fn parse_fixed<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, IdlError> {
+    lexer.clear_last_doc_comment();
+    try!(lexer.expect_and_consume(TokenType::Fixed));
+    let doc = lexer.last_doc_comment().map(|t| t.comment_contents());
+    let name_token = try!(lexer.expect_and_consume(TokenType::Ident));
+    try!(lexer.expect_and_consume(TokenType::LParen));
+
+    let size = try!(lexer.expect_and_consume(TokenType::Integer)).text.parse().unwrap();
+
+    try!(lexer.expect_and_consume(TokenType::RParen));
+    try!(lexer.expect_and_consume(TokenType::Semi));
+
+    Ok(Schema::Fixed(Box::new(FixedSchema {
+        name: name_token.text.into(),
+        doc: doc,
+        size: size,
+    })))
 }
 
 pub fn parse_idl(src: &str) -> Result<Protocol, IdlError> {
@@ -788,10 +818,10 @@ protocol TestEnum {
     assert_eq!(protocol.tys.len(), 2);
 
     let first = &protocol.tys[0];
-    if let &Schema::Enum(ref r) = first {
-        assert_eq!(r.name, Cow::Borrowed("TimePeriods"));
-        assert_eq!(r.doc, Some(Cow::Borrowed("Only two values")));
-        assert_eq!(&r.symbols, &[
+    if let &Schema::Enum(ref e) = first {
+        assert_eq!(e.name, Cow::Borrowed("TimePeriods"));
+        assert_eq!(e.doc, Some(Cow::Borrowed("Only two values")));
+        assert_eq!(&e.symbols, &[
             EnumSymbol { name: Cow::Borrowed("AM"), doc: None },
             EnumSymbol { name: Cow::Borrowed("PM"), doc: None },
         ]);
@@ -800,10 +830,10 @@ protocol TestEnum {
     }
 
     let second = &protocol.tys[1];
-    if let &Schema::Enum(ref r) = second {
-        assert_eq!(r.name, Cow::Borrowed("Seasons"));
-        assert_eq!(r.doc, None);
-        assert_eq!(&r.symbols, &[
+    if let &Schema::Enum(ref e) = second {
+        assert_eq!(e.name, Cow::Borrowed("Seasons"));
+        assert_eq!(e.doc, None);
+        assert_eq!(&e.symbols, &[
             EnumSymbol { name: Cow::Borrowed("SPRING"), doc: None },
             EnumSymbol { name: Cow::Borrowed("SUMMER"), doc: None },
             EnumSymbol { name: Cow::Borrowed("FALL"), doc: None },
@@ -812,6 +842,39 @@ protocol TestEnum {
                 doc: Some(Cow::Borrowed("Winter is coming."))
             },
         ]);
+    } else {
+        panic!("wrong type");
+    }
+
+}
+
+#[test]
+fn test_parse_fixed() {
+    let res = parse_idl(r#"
+protocol TestFixed {
+    /** An identifier */
+    fixed Guid(16);
+
+    fixed IPv4(4);
+}"#);
+    let protocol = res.unwrap();
+    assert_eq!(protocol.name, "TestFixed");
+    assert_eq!(protocol.tys.len(), 2);
+
+    let first = &protocol.tys[0];
+    if let &Schema::Fixed(ref f) = first {
+        assert_eq!(f.name, Cow::Borrowed("Guid"));
+        assert_eq!(f.doc, Some(Cow::Borrowed("An identifier")));
+        assert_eq!(f.size, 16);
+    } else {
+        panic!("wrong type");
+    }
+
+    let second = &protocol.tys[1];
+    if let &Schema::Fixed(ref f) = second {
+        assert_eq!(f.name, Cow::Borrowed("IPv4"));
+        assert_eq!(f.doc, None);
+        assert_eq!(f.size, 4);
     } else {
         panic!("wrong type");
     }
