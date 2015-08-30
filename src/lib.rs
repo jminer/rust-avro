@@ -11,14 +11,16 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 
 mod idl;
+mod decode;
 
 pub use idl::Lexer;
 pub use idl::parse_idl;
+pub use decode::decode;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value<'a> {
 	Null,
-	Boolean,
+	Boolean(bool),
 	Int(i32),
 	Long(i64),
 	Float(f32),
