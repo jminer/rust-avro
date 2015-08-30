@@ -9,7 +9,7 @@
 
 use std::borrow::Cow;
 use std::io::{self, Read};
-use std::iter::{repeat, Repeat};
+use std::iter::repeat;
 use std::mem;
 use std::string::FromUtf8Error;
 use std::str::Utf8Error;
