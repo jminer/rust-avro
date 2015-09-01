@@ -31,7 +31,7 @@ pub enum Value<'a, 'b> {
 	Record(Rc<RecordSchema<'a>>, Vec<Value<'a, 'b>>),
 	Enum(Rc<EnumSchema<'a>>, i32),
 	Array(Vec<Value<'a, 'b>>),
-	Map(HashMap<Cow<'a, str>, Value<'a, 'b>>),
+	Map(HashMap<Cow<'b, str>, Value<'a, 'b>>),
 	Fixed(Rc<FixedSchema<'a>>, Cow<'b, [u8]>),
 
 }
