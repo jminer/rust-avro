@@ -11,8 +11,17 @@ extern crate regex;
 
 use std::borrow::Cow;
 use std::ops::Range;
+use std::rc::Rc;
 use self::regex::Regex;
-use super::{Protocol, Schema, Field, RecordSchema, EnumSymbol, EnumSchema, FixedSchema};
+use super::{
+    Protocol,
+    Schema,
+    Field,
+    RecordSchema,
+    EnumSymbol,
+    EnumSchema,
+    FixedSchema,
+};
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct TokenRange<Idx> {
@@ -593,11 +602,7 @@ fn parse_record<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, IdlError> {
 
     try!(lexer.expect_and_consume(TokenType::RBrace));
 
-    let data = Box::new(RecordSchema {
-        name: Cow::Borrowed(name_token.text),
-        doc: doc,
-        fields: fields,
-    });
+    let data = Rc::new(RecordSchema::new(Cow::Borrowed(name_token.text), doc, fields));
     Ok(if error { Schema::Error(data) } else { Schema::Record(data) })
 }
 
@@ -629,7 +634,7 @@ fn parse_enum<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, IdlError> {
 
     try!(lexer.expect_and_consume(TokenType::RBrace));
 
-    Ok(Schema::Enum(Box::new(EnumSchema {
+    Ok(Schema::Enum(Rc::new(EnumSchema {
         name: Cow::Borrowed(name_token.text),
         doc: doc,
         symbols: symbols,
@@ -648,7 +653,7 @@ fn parse_fixed<'a>(lexer: &mut Lexer<'a>) -> Result<Schema<'a>, IdlError> {
     try!(lexer.expect_and_consume(TokenType::RParen));
     try!(lexer.expect_and_consume(TokenType::Semi));
 
-    Ok(Schema::Fixed(Box::new(FixedSchema {
+    Ok(Schema::Fixed(Rc::new(FixedSchema {
         name: name_token.text.into(),
         doc: doc,
         size: size,
