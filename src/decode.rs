@@ -21,6 +21,7 @@ pub enum DecodeErrorKind {
     UnexpectedEof,
     InvalidBoolean,
     IntegerOverflow,
+    NegativeLength,
     InvalidUtf8(Utf8Error),
 }
 
@@ -127,6 +128,9 @@ pub fn decode<'a, R: Read>(reader: &mut R, schema: &Schema<'a>)
         },
         &Schema::Bytes => {
             if let Value::Long(len) = try!(decode(reader, &Schema::Long)) {
+                if len < 0 {
+                    return Err(DecodeError { kind: DecodeErrorKind::NegativeLength });
+                }
                 let mut val: Vec<u8> = repeat(0).take(len as usize).collect();
                 try!(read_exact(reader, &mut val));
                 Ok(Value::Bytes(Cow::Owned(val)))
@@ -136,6 +140,9 @@ pub fn decode<'a, R: Read>(reader: &mut R, schema: &Schema<'a>)
         },
         &Schema::String => {
             if let Value::Long(len) = try!(decode(reader, &Schema::Long)) {
+                if len < 0 {
+                    return Err(DecodeError { kind: DecodeErrorKind::NegativeLength });
+                }
                 let mut val: Vec<u8> = repeat(0).take(len as usize).collect();
                 try!(read_exact(reader, &mut val));
                 Ok(Value::String(try!(String::from_utf8(val)).into()))
@@ -202,12 +209,22 @@ fn test_decode_floats() {
 fn test_decode_bytes() {
     assert_eq!(decode(&mut &b"\x04\x84\x32"[..], &Schema::Bytes).unwrap(),
         Value::Bytes(Cow::Borrowed(&b"\x84\x32"[..])));
+    match decode(&mut &b"\x03\x79\x65"[..], &Schema::Bytes) {
+        Err(DecodeError { kind: DecodeErrorKind::NegativeLength }) => {},
+        Err(_) => panic!("wrong error kind"),
+        _ => panic!("error expected"),
+    }
 }
 
 #[test]
 fn test_decode_string() {
     assert_eq!(decode(&mut &b"\x06\x79\x65\x73"[..], &Schema::String).unwrap(),
         Value::String("yes".into()));
+    match decode(&mut &b"\x03\x79\x65"[..], &Schema::String) {
+        Err(DecodeError { kind: DecodeErrorKind::NegativeLength }) => {},
+        Err(_) => panic!("wrong error kind"),
+        _ => panic!("error expected"),
+    }
 }
 
 #[test]
@@ -222,7 +239,7 @@ fn test_decode_record() {
     ];
     let schema = Rc::new(RecordSchema::new("Car".into(), None, fields));
     if let Value::Record(_, rec_data) =
-    decode(&mut &b"\x2E\x1F\x06\x52\x65\x64\x01"[..], &Schema::Record(schema)).unwrap() {
+    decode(&mut &b"\xAE\x1F\x06\x52\x65\x64\x01"[..], &Schema::Record(schema)).unwrap() {
         assert_eq!(rec_data[0], Value::Int(2007));
         assert_eq!(rec_data[1], Value::String("Red".into()));
         assert_eq!(rec_data[2], Value::Boolean(true));
