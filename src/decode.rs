@@ -128,6 +128,7 @@ pub fn decode<'a, R: Read>(reader: &mut R, schema: &Schema<'a>)
         },
         &Schema::Bytes => {
             if let Value::Long(len) = try!(decode(reader, &Schema::Long)) {
+                // TODO: should read in 64 KB chunks so that a long length won't cause a OOM
                 if len < 0 {
                     return Err(DecodeError { kind: DecodeErrorKind::NegativeLength });
                 }
@@ -140,6 +141,7 @@ pub fn decode<'a, R: Read>(reader: &mut R, schema: &Schema<'a>)
         },
         &Schema::String => {
             if let Value::Long(len) = try!(decode(reader, &Schema::Long)) {
+                // TODO: should read in 64 KB chunks so that a long length won't cause a OOM
                 if len < 0 {
                     return Err(DecodeError { kind: DecodeErrorKind::NegativeLength });
                 }

@@ -33,7 +33,48 @@ pub enum Value<'a, 'b> {
 	Array(Vec<Value<'a, 'b>>),
 	Map(HashMap<Cow<'b, str>, Value<'a, 'b>>),
 	Fixed(Rc<FixedSchema<'a>>, Cow<'b, [u8]>),
+}
 
+macro_rules! value_unwrap_fn {
+    ($n: ident, $t:ty, $variant:ident, $val_pat:pat => $ret:expr) => {
+        pub fn $n(&self) -> $t {
+            match self {
+                $val_pat => $ret,
+                _ => panic!(concat!(
+                    "called `Value::", stringify!($n), "()` on a non-`", stringify!($variant), "` value: {:?}"), self),
+            }
+        }
+    };
+}
+
+impl<'a, 'b> Value<'a, 'b> {
+    value_unwrap_fn!(unwrap_boolean, bool, Boolean, &Value::Boolean(val) => val);
+    value_unwrap_fn!(unwrap_int, i32, Int, &Value::Int(val) => val);
+    value_unwrap_fn!(unwrap_long, i64, Long, &Value::Long(val) => val);
+    value_unwrap_fn!(unwrap_float, f32, Float, &Value::Float(val) => val);
+    value_unwrap_fn!(unwrap_double, f64, Double, &Value::Double(val) => val);
+    value_unwrap_fn!(unwrap_bytes, &Cow<'b, [u8]>, Bytes, &Value::Bytes(ref val) => val);
+    value_unwrap_fn!(unwrap_string, &Cow<'b, str>, String, &Value::String(ref val) => val);
+    value_unwrap_fn!(unwrap_record, (&Rc<RecordSchema<'a>>, &Vec<Value<'a, 'b>>),
+        Record, &Value::Record(ref sch, ref val) => (sch, val));
+    value_unwrap_fn!(unwrap_enum, (&Rc<EnumSchema<'a>>, i32),
+        Enum, &Value::Enum(ref sch, val) => (sch, val));
+    value_unwrap_fn!(unwrap_array, &Vec<Value<'a, 'b>>, Array, &Value::Array(ref val) => val);
+    value_unwrap_fn!(unwrap_map, &HashMap<Cow<'b, str>, Value<'a, 'b>>,
+        Map, &Value::Map(ref val) => val);
+    value_unwrap_fn!(unwrap_fixed, (&Rc<FixedSchema<'a>>, &Cow<'b, [u8]>),
+        Fixed, &Value::Fixed(ref sch, ref val) => (sch, val));
+}
+
+#[test]
+fn test_value_unwrap() {
+    assert_eq!(Value::Boolean(true).unwrap_boolean(), true);
+    assert_eq!(Value::Int(4).unwrap_int(), 4);
+    assert_eq!(Value::Long(7).unwrap_long(), 7);
+    assert_eq!(Value::Float(3.14).unwrap_float(), 3.14);
+    assert_eq!(Value::Double(3.14).unwrap_double(), 3.14);
+    assert_eq!(Value::Bytes(Cow::Borrowed(&b"hi"[..])).unwrap_bytes(), &Cow::Borrowed(&b"hi"[..]));
+    assert_eq!(Value::String(Cow::Borrowed(&"hi"[..])).unwrap_string(), &Cow::Borrowed(&"hi"[..]));
 }
 
 #[derive(Debug, Clone, PartialEq)]
