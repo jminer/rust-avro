@@ -15,7 +15,9 @@ mod idl;
 mod decode;
 
 pub use idl::Lexer;
+pub use idl::IdlError;
 pub use idl::parse_idl;
+pub use decode::DecodeError;
 pub use decode::decode;
 
 #[derive(Debug, Clone, PartialEq)]
