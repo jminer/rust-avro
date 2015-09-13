@@ -218,7 +218,7 @@ pub struct Lexer<'a> {
     index: usize,
 
     line: usize,
-    column: usize,
+    line_start_index: usize,
     last_doc_comment: Option<Token<'a>>,
 }
 
@@ -230,7 +230,7 @@ impl<'a> Lexer<'a> {
             skip_comments: false,
             index: 0,
             line: 1,
-            column: 1,
+            line_start_index: 0,
             last_doc_comment: None
         }
     }
@@ -260,7 +260,7 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn column(&self) -> usize {
-        self.column
+        self.index - self.line_start_index
     }
 
     pub fn last_doc_comment(&self) -> Option<Token<'a>> {
@@ -304,6 +304,18 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    #[inline]
+    fn inc_index(&mut self, mut count: usize) {
+        while count > 0 {
+            if self.src.as_bytes()[self.index] == b'\n' {
+                self.line += 1;
+                self.line_start_index = self.index;
+            }
+            self.index += 1;
+            count -= 1;
+        }
+    }
+
     // I knew how to implement a lexer, but I did skim this example presented as a fast lexer:
     // http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/lexInCpp.html
     // linked from the bottom of http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/Lexing.html
@@ -317,7 +329,7 @@ impl<'a> Lexer<'a> {
         } else {
             return None;
         };
-        self.index += 1;
+        self.inc_index(1);
 
         let token = |ty, this: &mut Lexer<'a>| Some(Ok(Token {
             ty: ty, text: &this.src[start..this.index], range: (start..this.index).into()
@@ -343,14 +355,14 @@ impl<'a> Lexer<'a> {
 
             b' ' | b'\t' | b'\r' | b'\n' => {
                 while self.index < bytes.len() && is_ascii_whitespace(bytes[self.index]) {
-                    self.index += 1;
+                    self.inc_index(1);
                 }
                 return token(TokenType::Whitespace, self);
             },
 
             b'A' ... b'Z' | b'a' ... b'z' | b'_' => {
                 while self.index < bytes.len() && is_ascii_alphanumeric(bytes[self.index]) {
-                    self.index += 1;
+                    self.inc_index(1);
                 }
                 let token_text = &self.src[start..self.index];
                 let token_ty = TokenType::alphanumeric_token_from_str(token_text);
@@ -363,7 +375,7 @@ impl<'a> Lexer<'a> {
 
             b'0' ... b'9' => {
                 while self.index < bytes.len() && is_ascii_digit(bytes[self.index]) {
-                    self.index += 1;
+                    self.inc_index(1);
                 }
                 return token(TokenType::Integer, self);
             },
@@ -375,17 +387,17 @@ impl<'a> Lexer<'a> {
             b'/' if self.index < bytes.len() => {
                 match bytes[self.index] {
                     b'*' => {
-                        self.index += 1;
+                        self.inc_index(1);
                         let doc = self.index < bytes.len() && bytes[self.index] == b'*';
                         loop {
-                            self.index += 1;
+                            self.inc_index(1);
                             if bytes.len() - self.index < 2 {
                                 return Some(Err(IdlError {
                                         kind: IdlErrorKind::UnterminatedComment
                                 }));
                             }
                             if bytes[self.index + 1] == b'/' && bytes[self.index] == b'*' {
-                                self.index += 2;
+                                self.inc_index(2);
                                 break;
                             }
                         }
@@ -397,7 +409,7 @@ impl<'a> Lexer<'a> {
                     },
                     b'/' => {
                         while self.index < bytes.len() && !is_crlf(bytes[self.index]) {
-                            self.index += 1;
+                            self.inc_index(1);
                         }
                         return token(TokenType::LineComment, self);
                     },
