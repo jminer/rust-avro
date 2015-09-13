@@ -434,13 +434,6 @@ impl<'a> Iterator for Lexer<'a> {
                 if token.ty == TokenType::DocComment {
                     self.last_doc_comment = Some(token);
                 }
-                match token.ty {
-                    TokenType::Whitespace if self.skip_whitespace => continue,
-                    TokenType::RangeComment |
-                    TokenType::LineComment |
-                    TokenType::DocComment if self.skip_comments => continue,
-                    _ => {}
-                }
                 if self.skip_whitespace && token.ty == TokenType::Whitespace {
                     continue;
                 }
