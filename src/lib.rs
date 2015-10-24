@@ -7,6 +7,8 @@
  * except according to those terms.
  */
 
+extern crate serde_json;
+
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -80,9 +82,25 @@ fn test_value_unwrap() {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Property<'a> {
+    name: Cow<'a, str>,
+    value: serde_json::Value,
+}
+
+impl<'a> Property<'a> {
+    pub fn new(name: Cow<'a, str>, value: serde_json::Value) -> Property {
+        Property {
+            name: name,
+            value: value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct Field<'a> {
 	pub name: Cow<'a, str>,
 	pub doc: Option<Cow<'a, str>>,
+    pub properties: Vec<Property<'a>>,
 	pub ty: Schema<'a>,
 }
 
@@ -90,6 +108,7 @@ pub struct Field<'a> {
 pub struct RecordSchema<'a> {
 	pub name: Cow<'a, str>,
 	pub doc: Option<Cow<'a, str>>,
+    pub properties: Vec<Property<'a>>,
 	pub fields: Vec<Field<'a>>,
 	pub field_indexes: HashMap<Cow<'a, str>, usize>,
 }
@@ -102,12 +121,16 @@ fn create_field_indexes<'a>(fields: &Vec<Field<'a>>) -> HashMap<Cow<'a, str>, us
 }
 
 impl<'a> RecordSchema<'a> {
-    pub fn new(name: Cow<'a, str>, doc: Option<Cow<'a, str>>, fields: Vec<Field<'a>>)
-    -> RecordSchema<'a> {
+    pub fn new(name: Cow<'a, str>,
+               doc: Option<Cow<'a, str>>,
+               properties: Vec<Property<'a>>,
+               fields: Vec<Field<'a>>)
+               -> RecordSchema<'a> {
         let indexes = create_field_indexes(&fields);
         RecordSchema {
             name: name,
             doc: doc,
+            properties: properties,
             fields: fields,
             field_indexes: indexes,
         }

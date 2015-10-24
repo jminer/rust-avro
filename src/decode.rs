@@ -235,11 +235,11 @@ fn test_decode_record() {
     use super::{Field, RecordSchema};
 
     let fields = vec![
-        Field { name: "year".into(), doc: None, ty: Schema::Int },
-        Field { name: "color".into(), doc: None, ty: Schema::String },
-        Field { name: "running".into(), doc: None, ty: Schema::Boolean },
+        Field { name: "year".into(), doc: None, properties: vec![], ty: Schema::Int },
+        Field { name: "color".into(), doc: None, properties: vec![], ty: Schema::String },
+        Field { name: "running".into(), doc: None, properties: vec![], ty: Schema::Boolean },
     ];
-    let schema = Rc::new(RecordSchema::new("Car".into(), None, fields));
+    let schema = Rc::new(RecordSchema::new("Car".into(), None, vec![], fields));
     if let Value::Record(_, rec_data) =
     decode(&mut &b"\xAE\x1F\x06\x52\x65\x64\x01"[..], &Schema::Record(schema)).unwrap() {
         assert_eq!(rec_data[0], Value::Int(2007));

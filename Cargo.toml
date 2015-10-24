@@ -5,3 +5,4 @@ authors = ["Jordan Miner <jminer7@gmail.com>"]
 
 [dependencies]
 regex = "0.1.41"
+serde_json = "*"

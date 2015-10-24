@@ -18,10 +18,12 @@ use super::{
     Protocol,
     Schema,
     Field,
+    Property,
     RecordSchema,
     EnumSymbol,
     EnumSchema,
     FixedSchema,
+    serde_json,
 };
 
 // different from Range in that this struct is Copy
@@ -307,6 +309,8 @@ pub enum TokenType {
     DocComment,
     LineComment,
     Whitespace,
+
+    Json,
 }
 
 impl TokenType {
@@ -362,6 +366,16 @@ fn is_crlf(c: u8) -> bool {
     c == b'\r' || c == b'\n'
 }
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+enum PropertyState {
+    // An property is not currently being lexed.
+    None,
+    // The '@' has been found, but not the open parenthesis yet.
+    Start,
+    // The '(' has been found, and the next token is a JSON token.
+    Json,
+}
+
 #[derive(Debug, Clone)]
 pub struct Lexer<'a, 'b: 'a> {
     source_manager: &'a SourceManager<'b>,
@@ -369,7 +383,9 @@ pub struct Lexer<'a, 'b: 'a> {
     skip_comments: bool,
 
     index: usize,
-    saved_indexes: Vec<usize>,
+    property_state: PropertyState,
+
+    saved_state: Vec<(usize, PropertyState)>, // (index, property_state)
     token: Option<Result<Token, Box<IdlError>>>,
     last_doc_comment: Option<Token>,
 }
@@ -381,7 +397,8 @@ impl<'a, 'b> Lexer<'a, 'b> {
             skip_whitespace: false,
             skip_comments: false,
             index: 0,
-            saved_indexes: Vec::with_capacity(4),
+            property_state: PropertyState::None,
+            saved_state: Vec::with_capacity(4),
             token: None,
             last_doc_comment: None,
         }
@@ -416,11 +433,17 @@ impl<'a, 'b> Lexer<'a, 'b> {
     }
 
     pub fn save(&mut self) {
-        self.saved_indexes.push(self.index);
+        self.saved_state.push((self.index, self.property_state));
+    }
+
+    pub fn commit(&mut self) {
+        self.saved_state.pop().unwrap();
     }
 
     pub fn restore(&mut self) {
-        self.index = self.saved_indexes.pop().unwrap();
+        let state = self.saved_state.pop().unwrap();
+        self.index = state.0;
+        self.property_state = state.1;
     }
 
     pub fn expect_next_ty(&mut self, ty: TokenType) -> Result<Token, Box<IdlError>> {
@@ -430,7 +453,7 @@ impl<'a, 'b> Lexer<'a, 'b> {
                     Ok(token)
                 } else {
                     Err(Box::new(IdlError::new(
-                        IdlErrorKind::UnexpectedToken,
+                        IdlErrorKind::UnexpectedToken(Cow::Owned(vec![ty])),
                         self.source_manager.get_line(token.range.start),
                         self.source_manager.get_column(token.range.start)
                     )))
@@ -470,6 +493,38 @@ impl<'a, 'b> Lexer<'a, 'b> {
         }
     }
 
+    // Searches for the close parenthesis after the JSON in a property/annotation. No errors in the
+    // JSON are reported because the JSON parser can give a better error message than I can without
+    // implementing a JSON parser.
+    fn find_prop_json_end(src: &str, start: usize) -> usize {
+        let mut i = start;
+        let src = src.as_bytes();
+        loop {
+            if i >= src.len() {
+                return src.len();
+            }
+            if src[i] == b')' {
+                return i;
+            } else if src[i] == b'"' { // start of string
+                i += 1;
+                loop {
+                    if i >= src.len() {
+                        return src.len();
+                    }
+                    match src[i] {
+                        b'"' => break, // end of string
+                        b'\\' => {     // escaped character
+                            i += 1;
+                        },
+                        _ => {}
+                    }
+                    i += 1;
+                }
+            }
+            i += 1;
+        }
+    }
+
     // I knew how to implement a lexer, but I did skim this example presented as a fast lexer:
     // http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/lexInCpp.html
     // linked from the bottom of http://www.cs.dartmouth.edu/~mckeeman/cs48/mxcom/doc/Lexing.html
@@ -481,6 +536,16 @@ impl<'a, 'b> Lexer<'a, 'b> {
 
         let start = self.index;
 
+        let token = |ty, this: &mut Lexer<'a, 'b>| Some(Ok(Token {
+            ty: ty, range: (start..this.index).into()
+        }));
+
+        if self.property_state == PropertyState::Json {
+            self.index = Lexer::find_prop_json_end(self.source_manager.src, self.index);
+            self.property_state = PropertyState::None;
+            return token(TokenType::Json, self);
+        }
+
         let c = if self.index < bytes.len() {
             bytes[self.index] // could use get_unchecked() for speed
         } else {
@@ -488,12 +553,13 @@ impl<'a, 'b> Lexer<'a, 'b> {
         };
         self.index += 1;
 
-        let token = |ty, this: &mut Lexer<'a, 'b>| Some(Ok(Token {
-            ty: ty, range: (start..this.index).into()
-        }));
-
         match c {
-            b'(' => token(TokenType::LParen, self),
+            b'(' => {
+                if self.property_state == PropertyState::Start {
+                    self.property_state = PropertyState::Json;
+                }
+                token(TokenType::LParen, self)
+            },
             b')' => token(TokenType::RParen, self),
             b'{' => token(TokenType::LBrace, self),
             b'}' => token(TokenType::RBrace, self),
@@ -502,7 +568,10 @@ impl<'a, 'b> Lexer<'a, 'b> {
             b':' => token(TokenType::Colon, self),
             b';' => token(TokenType::Semi, self),
             b',' => token(TokenType::Comma, self),
-            b'@' => token(TokenType::At, self),
+            b'@' => {
+                self.property_state = PropertyState::Start;
+                token(TokenType::At, self)
+            },
             b'=' => token(TokenType::Equals, self),
             b'.' => token(TokenType::Dot, self),
             b'-' => token(TokenType::Hyphen, self),
@@ -591,7 +660,8 @@ pub enum IdlErrorKind {
     UnexpectedCharacter,
     UnterminatedComment,
     UnexpectedEnd,
-    UnexpectedToken,
+    UnexpectedToken(Cow<'static, [TokenType]>),
+    InvalidJson(serde_json::ErrorCode),
 }
 
 #[derive(Debug, Clone)]
@@ -607,6 +677,21 @@ impl IdlError {
             kind: kind,
             line: line,
             column: column,
+        }
+    }
+}
+
+impl From<serde_json::Error> for Box<IdlError> {
+    fn from(err: serde_json::Error) -> Box<IdlError> {
+        match err {
+            serde_json::Error::SyntaxError(code, line, col) => {
+                Box::new(IdlError {
+                    kind: IdlErrorKind::InvalidJson(code),
+                    line: line,
+                    column: col,
+                })
+            },
+            _ => panic!("unexpected JSON error type")
         }
     }
 }
@@ -695,20 +780,41 @@ enum/*range comment*/Suit2 { // a line comment
     ]);
 }
 
-//fn parse_annotation(lexer: &mut Lexer) {
-//}
+static INIT_TYPE_TOKENS: &'static [TokenType] = &[
+    // Be sure to keep this list in sync with the parse_type() match arms.
+    TokenType::Array,
+    TokenType::Map,
+    TokenType::Union,
+    TokenType::Boolean,
+    TokenType::Bytes,
+    TokenType::Int,
+    TokenType::String,
+    TokenType::Float,
+    TokenType::Double,
+    TokenType::Long,
+    TokenType::Null,
+    TokenType::Ident,
+];
 
-fn parse_type<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Box<IdlError>> {
+fn ext_token_list(list: &[TokenType], ext: &[TokenType]) -> Vec<TokenType> {
+    let mut tokens = ext.to_owned();
+    tokens.extend(list);
+    tokens
+}
+
+fn parse_type<'a>(lexer: &mut Lexer, ext_valid_tokens: &[TokenType])
+    -> Result<Schema<'a>, Box<IdlError>>
+{
     match lexer.expect_next() {
         Ok(Token { ty: TokenType::Array, .. }) => {
             try!(lexer.expect_next_ty(TokenType::LAngle));
-            let ty = try!(parse_type(lexer));
+            let ty = try!(parse_type(lexer, &[]));
             try!(lexer.expect_next_ty(TokenType::RAngle));
             Ok(Schema::Array { items: Box::new(ty) })
         },
         Ok(Token { ty: TokenType::Map, .. }) => {
             try!(lexer.expect_next_ty(TokenType::LAngle));
-            let ty = try!(parse_type(lexer));
+            let ty = try!(parse_type(lexer, &[]));
             try!(lexer.expect_next_ty(TokenType::RAngle));
             Ok(Schema::Map { values: Box::new(ty) })
         },
@@ -726,7 +832,7 @@ fn parse_type<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Box<IdlError>> {
                         if !first {
                             try!(lexer.expect_next_ty(TokenType::Comma));
                         }
-                        tys.push(try!(parse_type(lexer)));
+                        tys.push(try!(parse_type(lexer, &[])));
                     },
                     Err(err) => return Err(err),
                 };
@@ -746,23 +852,32 @@ fn parse_type<'a>(lexer: &mut Lexer) -> Result<Schema<'a>, Box<IdlError>> {
         // TODO: need to handle reference types
         Ok(Token { ty: TokenType::Ident, range: SpanRange { start, .. }, .. }) =>
             Err(Box::new(IdlError::new(
-                IdlErrorKind::UnexpectedToken,
+                IdlErrorKind::UnexpectedToken(Cow::Borrowed(&[])),
                 lexer.source_manager.get_line(start),
                 lexer.source_manager.get_column(start)
             ))),
         Err(err) => Err(err),
         Ok(Token { range: SpanRange { start, .. }, .. }) =>
             Err(Box::new(IdlError::new(
-                IdlErrorKind::UnexpectedToken,
+                IdlErrorKind::UnexpectedToken(
+                    if ext_valid_tokens.is_empty() {
+                        Cow::Borrowed(INIT_TYPE_TOKENS)
+                    } else {
+                        Cow::Owned(ext_token_list(INIT_TYPE_TOKENS, ext_valid_tokens))
+                    }
+                ),
                 lexer.source_manager.get_line(start),
                 lexer.source_manager.get_column(start)
             ))),
     }
 }
 
-fn parse_field<'a, 'b>(lexer: &mut Lexer<'a, 'b>) -> Result<Field<'b>, Box<IdlError>> {
+fn parse_field<'a, 'b>(lexer: &mut Lexer<'a, 'b>, properties: Vec<Property<'b>>)
+    -> Result<Field<'b>, Box<IdlError>>
+{
     lexer.clear_last_doc_comment();
-    let ty = try!(parse_type(lexer));
+    let rbrace_ext = &[TokenType::RBrace];
+    let ty = try!(parse_type(lexer, if properties.is_empty() { rbrace_ext } else { &[] }));
     let doc = lexer.last_doc_comment().map(|t|
         t.comment_contents(lexer.source_manager.src_slice(t.range))
     );
@@ -774,18 +889,21 @@ fn parse_field<'a, 'b>(lexer: &mut Lexer<'a, 'b>) -> Result<Field<'b>, Box<IdlEr
     Ok(Field {
         name: Cow::Borrowed(name),
         doc: doc,
+        properties: properties,
         ty: ty,
     })
 }
 
-fn parse_record<'a, 'b>(lexer: &mut Lexer<'a, 'b>) -> Result<Schema<'b>, Box<IdlError>> {
+fn parse_record<'a, 'b>(lexer: &mut Lexer<'a, 'b>, properties: Vec<Property<'b>>)
+    -> Result<Schema<'b>, Box<IdlError>>
+{
     lexer.clear_last_doc_comment();
     let error = match lexer.expect_next() {
         Ok(Token { ty: TokenType::Record, .. }) => false,
         Ok(Token { ty: TokenType::Error, .. }) => true,
         Err(err) => return Err(err),
         Ok(Token { range: SpanRange { start, .. }, .. }) => return Err(Box::new(IdlError {
-            kind: IdlErrorKind::UnexpectedToken,
+            kind: IdlErrorKind::UnexpectedToken(Cow::Borrowed(&[])),
             line: lexer.source_manager.get_line(start),
             column: lexer.source_manager.get_column(start),
         })),
@@ -796,14 +914,32 @@ fn parse_record<'a, 'b>(lexer: &mut Lexer<'a, 'b>) -> Result<Schema<'b>, Box<Idl
     let name_token = try!(lexer.expect_next_ty(TokenType::Ident));
     try!(lexer.expect_next_ty(TokenType::LBrace));
 
+    let mut props = vec![];
     let mut fields = vec![];
     loop {
         lexer.save();
         let next = lexer.expect_next();
         lexer.restore();
         match next {
-            Ok(Token { ty: TokenType::RBrace, .. }) => break,
-            Ok(_) => fields.push(try!(parse_field(lexer))),
+            Ok(Token { ty: TokenType::RBrace, range: SpanRange { start, .. }, .. }) => {
+                if !props.is_empty() {
+                    return Err(Box::new(IdlError {
+                        kind: IdlErrorKind::UnexpectedToken(Cow::Owned(
+                            ext_token_list(INIT_TYPE_TOKENS, &[TokenType::At])
+                        )),
+                        line: lexer.source_manager.get_line(start),
+                        column: lexer.source_manager.get_column(start),
+                    }))
+                }
+                break;
+            },
+            Ok(Token { ty: TokenType::At, .. }) => {
+                props.push(try!(parse_property(lexer)));
+            },
+            Ok(_) => {
+                fields.push(try!(parse_field(lexer, props)));
+                props = vec![];
+            },
             Err(err) => return Err(err),
         };
     }
@@ -811,7 +947,7 @@ fn parse_record<'a, 'b>(lexer: &mut Lexer<'a, 'b>) -> Result<Schema<'b>, Box<Idl
     try!(lexer.expect_next_ty(TokenType::RBrace));
 
     let name = lexer.source_manager.src_slice(name_token.range);
-    let data = Rc::new(RecordSchema::new(Cow::Borrowed(name), doc, fields));
+    let data = Rc::new(RecordSchema::new(Cow::Borrowed(name), doc, properties, fields));
     Ok(if error { Schema::Error(data) } else { Schema::Record(data) })
 }
 
@@ -880,13 +1016,26 @@ fn parse_fixed<'a, 'b>(lexer: &mut Lexer<'a, 'b>) -> Result<Schema<'b>, Box<IdlE
     })))
 }
 
+// Parses a property/annotation.
+fn parse_property<'a, 'b>(lexer: &mut Lexer<'a, 'b>) -> Result<Property<'b>, Box<IdlError>> {
+    try!(lexer.expect_next_ty(TokenType::At));
+    let name_token = try!(lexer.expect_next_ty(TokenType::Ident));
+    let name = lexer.source_manager.src_slice(name_token.range);
+    try!(lexer.expect_next_ty(TokenType::LParen));
+    let json_token = try!(lexer.expect_next_ty(TokenType::Json));
+    let val = try!(serde_json::from_str(lexer.source_manager.src_slice(json_token.range)));
+    try!(lexer.expect_next_ty(TokenType::RParen));
+
+    Ok(Property::new(name.into(), val))
+}
+
 pub fn parse_idl(src: &str) -> Result<Protocol, Box<IdlError>> {
     let manager = SourceManager::new(src);
     let mut lexer = Lexer::new(&manager);
     lexer.set_skip_whitespace(true);
     lexer.set_skip_comments(true);
 
-    // TODO: annotations
+    // TODO: properties
 
     try!(lexer.expect_next_ty(TokenType::Protocol));
     let doc = lexer.last_doc_comment().map(|t|
@@ -895,20 +1044,52 @@ pub fn parse_idl(src: &str) -> Result<Protocol, Box<IdlError>> {
     let name_token = try!(lexer.expect_next_ty(TokenType::Ident));
     try!(lexer.expect_next_ty(TokenType::LBrace));
 
+    static INIT_TOKENS: &'static [TokenType] = &[
+        TokenType::RBrace,
+        TokenType::At,
+        TokenType::Record,
+        TokenType::Error,
+        TokenType::Enum,
+        TokenType::Fixed,
+    ];
+    static SUBSEQ_TOKENS: &'static [TokenType] = &[
+        TokenType::At,
+        TokenType::Record,
+        TokenType::Error,
+        TokenType::Enum,
+        TokenType::Fixed,
+    ];
+
+    let mut props = vec![];
     let mut tys = vec![];
     loop {
         lexer.save();
         let next = lexer.expect_next();
         lexer.restore();
         match next {
-            Ok(Token { ty: TokenType::RBrace, .. }) => break,
+            Ok(Token { ty: TokenType::RBrace, range: SpanRange { start, .. }, .. }) => {
+                if !props.is_empty() {
+                    return Err(Box::new(IdlError {
+                        kind: IdlErrorKind::UnexpectedToken(Cow::Borrowed(SUBSEQ_TOKENS)),
+                        line: lexer.source_manager.get_line(start),
+                        column: lexer.source_manager.get_column(start),
+                    }))
+                }
+                break;
+            },
+            Ok(Token { ty: TokenType::At, .. }) => {
+                props.push(try!(parse_property(&mut lexer)));
+            },
             Ok(Token { ty: TokenType::Record, .. }) |
-            Ok(Token { ty: TokenType::Error, .. }) => tys.push(try!(parse_record(&mut lexer))),
+            Ok(Token { ty: TokenType::Error, .. }) => {
+                tys.push(try!(parse_record(&mut lexer, props)));
+                props = vec![];
+            },
             Ok(Token { ty: TokenType::Enum, .. }) => tys.push(try!(parse_enum(&mut lexer))),
             Ok(Token { ty: TokenType::Fixed, .. }) => tys.push(try!(parse_fixed(&mut lexer))),
             Err(err) => return Err(err),
             Ok(Token { range: SpanRange { start, .. }, .. }) => return Err(Box::new(IdlError {
-                kind: IdlErrorKind::UnexpectedToken,
+                kind: IdlErrorKind::UnexpectedToken(Cow::Borrowed(INIT_TOKENS)),
                 line: lexer.source_manager.get_line(start),
                 column: lexer.source_manager.get_column(start),
             })),
@@ -1114,4 +1295,106 @@ protocol TestFixed {
         panic!("wrong type");
     }
 
+}
+
+#[test]
+fn test_parse_properties() {
+    let res = parse_idl(r#"
+protocol TestAnno {
+    @naming("pascalCase")
+    // tests ) in a string
+    @harder("unpaired: )")
+    // tests escaped chars
+    @harder("also \"unpaired: )")
+    // tests that not too many characters are skipped for \u
+    @harder("also \u1234\" is still in the string")
+    @attributes([6, 21, 461, -3.14, -7])
+    record First {
+        @foo(5)
+        @bar(false)
+        int i;
+        string color;
+        @naming("camelCase")
+        boolean fast;
+    }
+    }
+}"#);
+    let protocol = res.unwrap();
+    assert_eq!(protocol.name, "TestAnno");
+    assert_eq!(protocol.tys.len(), 1);
+
+    let first = &protocol.tys[0];
+    if let &Schema::Record(ref r) = first {
+        assert_eq!(r.properties.len(), 5);
+        assert_eq!(r.properties[0].name, "naming");
+        assert_eq!(r.properties[0].value.as_string(), Some("pascalCase"));
+        assert_eq!(r.properties[1].name, "harder");
+        assert_eq!(r.properties[1].value.as_string(), Some("unpaired: )"));
+        assert_eq!(r.properties[2].name, "harder");
+        assert_eq!(r.properties[2].value.as_string(), Some("also \"unpaired: )"));
+        assert_eq!(r.properties[3].name, "harder");
+        assert_eq!(r.properties[3].value.as_string(),
+            Some("also \u{1234}\" is still in the string"));
+        assert_eq!(r.properties[4].name, "attributes");
+        assert_eq!(r.properties[4].value.as_array(), Some(&vec![
+            serde_json::Value::U64(6),
+            serde_json::Value::U64(21),
+            serde_json::Value::U64(461),
+            serde_json::Value::F64(-3.14),
+            serde_json::Value::I64(-7),
+        ]));
+
+        let field_i = &r.fields[0];
+        assert_eq!(field_i.properties.len(), 2);
+        assert_eq!(field_i.properties[0].name, "foo");
+        assert_eq!(field_i.properties[0].value.as_u64(), Some(5));
+        assert_eq!(field_i.properties[1].name, "bar");
+        assert_eq!(field_i.properties[1].value.as_boolean(), Some(false));
+
+        let field_color = &r.fields[1];
+        assert_eq!(field_color.properties.len(), 0);
+
+        let field_fast = &r.fields[2];
+        assert_eq!(field_fast.properties.len(), 1);
+    } else {
+        panic!("wrong type");
+    }
+}
+
+#[test]
+fn test_protocol_dangling_property_error() {
+    let res = parse_idl(r#"
+protocol TestAnnoErr {
+    @test("apple")
+    record First {
+    }
+    @foobar(true)
+}"#);
+    let err = res.unwrap_err();
+    if let IdlErrorKind::UnexpectedToken(ref valid_tokens) = err.kind {
+        assert!(!valid_tokens.is_empty());
+    } else {
+        panic!("wrong error kind");
+    }
+    assert_eq!(err.line, 7);
+    assert_eq!(err.column, 1);
+}
+
+#[test]
+fn test_record_dangling_property_error() {
+    let res = parse_idl(r#"
+protocol TestAnnoErr {
+    @test("apple")
+    record First {
+        @foobar(true)
+    }
+}"#);
+    let err = res.unwrap_err();
+    if let IdlErrorKind::UnexpectedToken(ref valid_tokens) = err.kind {
+        assert!(!valid_tokens.is_empty());
+    } else {
+        panic!("wrong error kind");
+    }
+    assert_eq!(err.line, 6);
+    assert_eq!(err.column, 5);
 }
