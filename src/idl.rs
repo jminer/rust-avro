@@ -1454,7 +1454,45 @@ protocol TestProp {
 
     if let &Schema::Fixed(ref ty_hash) = &protocol.tys[1] {
         assert_eq!(ty_hash.doc, None);
-        assert_eq!(protocol.properties.len(), 0);
+        assert_eq!(ty_hash.properties.len(), 0);
+    } else {
+        panic!("wrong type");
+    }
+}
+
+#[test]
+fn test_parse_enum_properties() {
+    let res = parse_idl(r#"
+protocol TestProp {
+    /** Only two values */
+    @foo(5)
+    @bar("blue")
+    enum TimePeriods {
+        AM, PM
+    }
+    enum Fruit {
+        APPLE,
+        BANANA
+    }
+}"#);
+    let protocol = res.unwrap();
+    assert_eq!(protocol.name, "TestProp");
+    assert_eq!(protocol.tys.len(), 2);
+
+    if let &Schema::Enum(ref ty_time) = &protocol.tys[0] {
+        assert_eq!(ty_time.doc, Some(Cow::Borrowed("Only two values")));
+        assert_eq!(ty_time.properties.len(), 2);
+        assert_eq!(ty_time.properties[0].name, "foo");
+        assert_eq!(ty_time.properties[0].value.as_u64(), Some(5));
+        assert_eq!(ty_time.properties[1].name, "bar");
+        assert_eq!(ty_time.properties[1].value.as_string(), Some("blue"));
+    } else {
+        panic!("wrong type");
+    }
+
+    if let &Schema::Enum(ref ty_fruit) = &protocol.tys[1] {
+        assert_eq!(ty_fruit.doc, None);
+        assert_eq!(ty_fruit.properties.len(), 0);
     } else {
         panic!("wrong type");
     }
