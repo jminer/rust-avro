@@ -147,6 +147,7 @@ pub struct EnumSymbol<'a> {
 pub struct EnumSchema<'a> {
 	pub name: Cow<'a, str>,
 	pub doc: Option<Cow<'a, str>>,
+    pub properties: Vec<Property<'a>>,
 	pub symbols: Vec<EnumSymbol<'a>>,
 }
 
@@ -154,14 +155,19 @@ pub struct EnumSchema<'a> {
 pub struct FixedSchema<'a> {
 	pub name: Cow<'a, str>,
 	pub doc: Option<Cow<'a, str>>,
+    pub properties: Vec<Property<'a>>,
 	pub size: usize,
 }
 
 impl<'a> FixedSchema<'a> {
-    pub fn new(name: Cow<'a, str>, doc: Option<Cow<'a, str>>, size: usize)
-    -> FixedSchema<'a> {
+    pub fn new(name: Cow<'a, str>,
+               doc: Option<Cow<'a, str>>,
+               properties: Vec<Property<'a>>,
+               size: usize)
+               -> FixedSchema<'a> {
         FixedSchema {
             name: name,
+            properties: properties,
             doc: doc,
             size: size,
         }
@@ -208,6 +214,7 @@ pub struct Message<'a> {
 pub struct Protocol<'a> {
     pub name: Cow<'a, str>,
 	pub doc: Option<Cow<'a, str>>,
+    pub properties: Vec<Property<'a>>,
     pub tys: Vec<Schema<'a>>,
     pub messages: Vec<Message<'a>>,
 }

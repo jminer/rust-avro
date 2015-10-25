@@ -432,6 +432,12 @@ impl<'a, 'b> Lexer<'a, 'b> {
         self.last_doc_comment = None;
     }
 
+    pub fn last_doc_comment_contents(&self) -> Option<Cow<'b, str>> {
+        self.last_doc_comment().map(|t|
+            t.comment_contents(self.source_manager.src_slice(t.range))
+        )
+    }
+
     pub fn save(&mut self) {
         self.saved_state.push((self.index, self.property_state));
     }
@@ -872,15 +878,13 @@ fn parse_type<'a>(lexer: &mut Lexer, ext_valid_tokens: &[TokenType])
     }
 }
 
-fn parse_field<'a, 'b>(lexer: &mut Lexer<'a, 'b>, properties: Vec<Property<'b>>)
+fn parse_field<'a, 'b>(lexer: &mut Lexer<'a, 'b>,
+    doc: Option<Cow<'b, str>>,
+    properties: Vec<Property<'b>>)
     -> Result<Field<'b>, Box<IdlError>>
 {
-    lexer.clear_last_doc_comment();
     let rbrace_ext = &[TokenType::RBrace];
     let ty = try!(parse_type(lexer, if properties.is_empty() { rbrace_ext } else { &[] }));
-    let doc = lexer.last_doc_comment().map(|t|
-        t.comment_contents(lexer.source_manager.src_slice(t.range))
-    );
     let name_token = try!(lexer.expect_next_ty(TokenType::Ident));
     let name = lexer.source_manager.src_slice(name_token.range);
     // TODO: parse variable names and defaults
@@ -894,10 +898,10 @@ fn parse_field<'a, 'b>(lexer: &mut Lexer<'a, 'b>, properties: Vec<Property<'b>>)
     })
 }
 
-fn parse_record<'a, 'b>(lexer: &mut Lexer<'a, 'b>, properties: Vec<Property<'b>>)
-    -> Result<Schema<'b>, Box<IdlError>>
-{
-    lexer.clear_last_doc_comment();
+fn parse_record<'a, 'b>(lexer: &mut Lexer<'a, 'b>,
+                        doc: Option<Cow<'b, str>>,
+                        properties: Vec<Property<'b>>)
+                        -> Result<Schema<'b>, Box<IdlError>> {
     let error = match lexer.expect_next() {
         Ok(Token { ty: TokenType::Record, .. }) => false,
         Ok(Token { ty: TokenType::Error, .. }) => true,
@@ -908,12 +912,10 @@ fn parse_record<'a, 'b>(lexer: &mut Lexer<'a, 'b>, properties: Vec<Property<'b>>
             column: lexer.source_manager.get_column(start),
         })),
     };
-    let doc = lexer.last_doc_comment().map(|t|
-        t.comment_contents(lexer.source_manager.src_slice(t.range))
-    );
     let name_token = try!(lexer.expect_next_ty(TokenType::Ident));
     try!(lexer.expect_next_ty(TokenType::LBrace));
 
+    lexer.clear_last_doc_comment();
     let mut props = vec![];
     let mut fields = vec![];
     loop {
@@ -937,8 +939,10 @@ fn parse_record<'a, 'b>(lexer: &mut Lexer<'a, 'b>, properties: Vec<Property<'b>>
                 props.push(try!(parse_property(lexer)));
             },
             Ok(_) => {
-                fields.push(try!(parse_field(lexer, props)));
+                let doc = lexer.last_doc_comment_contents();
+                fields.push(try!(parse_field(lexer, doc, props)));
                 props = vec![];
+                lexer.clear_last_doc_comment();
             },
             Err(err) => return Err(err),
         };
@@ -951,12 +955,11 @@ fn parse_record<'a, 'b>(lexer: &mut Lexer<'a, 'b>, properties: Vec<Property<'b>>
     Ok(if error { Schema::Error(data) } else { Schema::Record(data) })
 }
 
-fn parse_enum<'a, 'b>(lexer: &mut Lexer<'a, 'b>) -> Result<Schema<'b>, Box<IdlError>> {
-    lexer.clear_last_doc_comment();
+fn parse_enum<'a, 'b>(lexer: &mut Lexer<'a, 'b>,
+                      doc: Option<Cow<'b, str>>,
+                      properties: Vec<Property<'b>>)
+                      -> Result<Schema<'b>, Box<IdlError>> {
     try!(lexer.expect_next_ty(TokenType::Enum));
-    let doc = lexer.last_doc_comment().map(|t|
-        t.comment_contents(lexer.source_manager.src_slice(t.range))
-    );
     let name_token = try!(lexer.expect_next_ty(TokenType::Ident));
     try!(lexer.expect_next_ty(TokenType::LBrace));
 
@@ -990,16 +993,16 @@ fn parse_enum<'a, 'b>(lexer: &mut Lexer<'a, 'b>) -> Result<Schema<'b>, Box<IdlEr
     Ok(Schema::Enum(Rc::new(EnumSchema {
         name: Cow::Borrowed(lexer.source_manager.src_slice(name_token.range)),
         doc: doc,
+        properties: properties,
         symbols: symbols,
     })))
 }
 
-fn parse_fixed<'a, 'b>(lexer: &mut Lexer<'a, 'b>) -> Result<Schema<'b>, Box<IdlError>> {
-    lexer.clear_last_doc_comment();
+fn parse_fixed<'a, 'b>(lexer: &mut Lexer<'a, 'b>,
+                       doc: Option<Cow<'b, str>>,
+                       properties: Vec<Property<'b>>)
+                       -> Result<Schema<'b>, Box<IdlError>> {
     try!(lexer.expect_next_ty(TokenType::Fixed));
-    let doc = lexer.last_doc_comment().map(|t|
-        t.comment_contents(lexer.source_manager.src_slice(t.range))
-    );
     let name_token = try!(lexer.expect_next_ty(TokenType::Ident));
     try!(lexer.expect_next_ty(TokenType::LParen));
 
@@ -1012,6 +1015,7 @@ fn parse_fixed<'a, 'b>(lexer: &mut Lexer<'a, 'b>) -> Result<Schema<'b>, Box<IdlE
     Ok(Schema::Fixed(Rc::new(FixedSchema {
         name: Cow::Borrowed(lexer.source_manager.src_slice(name_token.range)),
         doc: doc,
+        properties: properties,
         size: size,
     })))
 }
@@ -1035,7 +1039,29 @@ pub fn parse_idl(src: &str) -> Result<Protocol, Box<IdlError>> {
     lexer.set_skip_whitespace(true);
     lexer.set_skip_comments(true);
 
-    // TODO: properties
+    static INIT_PROTO_TOKENS: &'static [TokenType] = &[
+        TokenType::At,
+        TokenType::Protocol,
+    ];
+
+    let mut properties = vec![];
+    loop {
+        lexer.save();
+        let next = lexer.expect_next();
+        lexer.restore();
+        match next {
+            Ok(Token { ty: TokenType::At, .. }) => {
+                properties.push(try!(parse_property(&mut lexer)));
+            },
+            Ok(Token { ty: TokenType::Protocol, .. }) => break,
+            Err(err) => return Err(err),
+            Ok(Token { range: SpanRange { start, .. }, .. }) => return Err(Box::new(IdlError {
+                kind: IdlErrorKind::UnexpectedToken(Cow::Borrowed(INIT_PROTO_TOKENS)),
+                line: lexer.source_manager.get_line(start),
+                column: lexer.source_manager.get_column(start),
+            })),
+        };
+    }
 
     try!(lexer.expect_next_ty(TokenType::Protocol));
     let doc = lexer.last_doc_comment().map(|t|
@@ -1060,6 +1086,7 @@ pub fn parse_idl(src: &str) -> Result<Protocol, Box<IdlError>> {
         TokenType::Fixed,
     ];
 
+    lexer.clear_last_doc_comment();
     let mut props = vec![];
     let mut tys = vec![];
     loop {
@@ -1082,11 +1109,23 @@ pub fn parse_idl(src: &str) -> Result<Protocol, Box<IdlError>> {
             },
             Ok(Token { ty: TokenType::Record, .. }) |
             Ok(Token { ty: TokenType::Error, .. }) => {
-                tys.push(try!(parse_record(&mut lexer, props)));
+                let doc = lexer.last_doc_comment_contents();
+                tys.push(try!(parse_record(&mut lexer, doc, props)));
                 props = vec![];
+                lexer.clear_last_doc_comment();
             },
-            Ok(Token { ty: TokenType::Enum, .. }) => tys.push(try!(parse_enum(&mut lexer))),
-            Ok(Token { ty: TokenType::Fixed, .. }) => tys.push(try!(parse_fixed(&mut lexer))),
+            Ok(Token { ty: TokenType::Enum, .. }) => {
+                let doc = lexer.last_doc_comment_contents();
+                tys.push(try!(parse_enum(&mut lexer, doc, props)));
+                props = vec![];
+                lexer.clear_last_doc_comment();
+            },
+            Ok(Token { ty: TokenType::Fixed, .. }) => {
+                let doc = lexer.last_doc_comment_contents();
+                tys.push(try!(parse_fixed(&mut lexer, doc, props)));
+                props = vec![];
+                lexer.clear_last_doc_comment();
+            },
             Err(err) => return Err(err),
             Ok(Token { range: SpanRange { start, .. }, .. }) => return Err(Box::new(IdlError {
                 kind: IdlErrorKind::UnexpectedToken(Cow::Borrowed(INIT_TOKENS)),
@@ -1101,6 +1140,7 @@ pub fn parse_idl(src: &str) -> Result<Protocol, Box<IdlError>> {
     Ok(Protocol {
         name: Cow::Borrowed(lexer.source_manager.src_slice(name_token.range)),
         doc: doc,
+        properties: properties,
         tys: tys,
         messages: vec![]
     })
@@ -1298,9 +1338,29 @@ protocol TestFixed {
 }
 
 #[test]
-fn test_parse_properties() {
+fn test_parse_protocol_properties() {
     let res = parse_idl(r#"
-protocol TestAnno {
+/** Let me tell you about this protocol */
+@foo(5)
+@bar("blue")
+protocol TestProp {
+}"#);
+    let protocol = res.unwrap();
+    assert_eq!(protocol.name, "TestProp");
+    assert_eq!(protocol.doc, Some(Cow::Borrowed("Let me tell you about this protocol")));
+    assert_eq!(protocol.tys.len(), 0);
+    assert_eq!(protocol.properties.len(), 2);
+    assert_eq!(protocol.properties[0].name, "foo");
+    assert_eq!(protocol.properties[0].value.as_u64(), Some(5));
+    assert_eq!(protocol.properties[1].name, "bar");
+    assert_eq!(protocol.properties[1].value.as_string(), Some("blue"));
+}
+
+#[test]
+fn test_parse_record_properties() {
+    let res = parse_idl(r#"
+protocol TestProp {
+    /** An important record */
     @naming("pascalCase")
     // tests ) in a string
     @harder("unpaired: )")
@@ -1310,21 +1370,24 @@ protocol TestAnno {
     @harder("also \u1234\" is still in the string")
     @attributes([6, 21, 461, -3.14, -7])
     record First {
+        /** An important number */
         @foo(5)
         @bar(false)
         int i;
         string color;
+        /** An important field */
         @naming("camelCase")
         boolean fast;
     }
     }
 }"#);
     let protocol = res.unwrap();
-    assert_eq!(protocol.name, "TestAnno");
+    assert_eq!(protocol.name, "TestProp");
     assert_eq!(protocol.tys.len(), 1);
 
     let first = &protocol.tys[0];
     if let &Schema::Record(ref r) = first {
+        assert_eq!(r.doc, Some(Cow::Borrowed("An important record")));
         assert_eq!(r.properties.len(), 5);
         assert_eq!(r.properties[0].name, "naming");
         assert_eq!(r.properties[0].value.as_string(), Some("pascalCase"));
@@ -1345,6 +1408,7 @@ protocol TestAnno {
         ]));
 
         let field_i = &r.fields[0];
+        assert_eq!(field_i.doc, Some(Cow::Borrowed("An important number")));
         assert_eq!(field_i.properties.len(), 2);
         assert_eq!(field_i.properties[0].name, "foo");
         assert_eq!(field_i.properties[0].value.as_u64(), Some(5));
@@ -1352,10 +1416,45 @@ protocol TestAnno {
         assert_eq!(field_i.properties[1].value.as_boolean(), Some(false));
 
         let field_color = &r.fields[1];
+        assert_eq!(field_color.doc, None);
         assert_eq!(field_color.properties.len(), 0);
 
         let field_fast = &r.fields[2];
+        assert_eq!(field_fast.doc, Some(Cow::Borrowed("An important field")));
         assert_eq!(field_fast.properties.len(), 1);
+    } else {
+        panic!("wrong type");
+    }
+}
+
+#[test]
+fn test_parse_fixed_properties() {
+    let res = parse_idl(r#"
+protocol TestProp {
+    /** A named data type */
+    @foo(5)
+    @bar("blue")
+    fixed Guid(16);
+    fixed Hash(16);
+}"#);
+    let protocol = res.unwrap();
+    assert_eq!(protocol.name, "TestProp");
+    assert_eq!(protocol.tys.len(), 2);
+
+    if let &Schema::Fixed(ref ty_guid) = &protocol.tys[0] {
+        assert_eq!(ty_guid.doc, Some(Cow::Borrowed("A named data type")));
+        assert_eq!(ty_guid.properties.len(), 2);
+        assert_eq!(ty_guid.properties[0].name, "foo");
+        assert_eq!(ty_guid.properties[0].value.as_u64(), Some(5));
+        assert_eq!(ty_guid.properties[1].name, "bar");
+        assert_eq!(ty_guid.properties[1].value.as_string(), Some("blue"));
+    } else {
+        panic!("wrong type");
+    }
+
+    if let &Schema::Fixed(ref ty_hash) = &protocol.tys[1] {
+        assert_eq!(ty_hash.doc, None);
+        assert_eq!(protocol.properties.len(), 0);
     } else {
         panic!("wrong type");
     }
@@ -1364,7 +1463,7 @@ protocol TestAnno {
 #[test]
 fn test_protocol_dangling_property_error() {
     let res = parse_idl(r#"
-protocol TestAnnoErr {
+protocol TestPropErr {
     @test("apple")
     record First {
     }
@@ -1383,7 +1482,7 @@ protocol TestAnnoErr {
 #[test]
 fn test_record_dangling_property_error() {
     let res = parse_idl(r#"
-protocol TestAnnoErr {
+protocol TestPropErr {
     @test("apple")
     record First {
         @foobar(true)

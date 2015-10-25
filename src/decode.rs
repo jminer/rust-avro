@@ -255,7 +255,7 @@ fn test_decode_fixed() {
     use std::rc::Rc;
     use super::FixedSchema;
 
-    let schema = Rc::new(FixedSchema::new("FewBytes".into(), None, 3));
+    let schema = Rc::new(FixedSchema::new("FewBytes".into(), None, vec![], 3));
     if let Value::Fixed(_, rec_data) =
     decode(&mut &b"\xB4\xF6\x02"[..], &Schema::Fixed(schema)).unwrap() {
         assert_eq!(rec_data[0], 0xB4);
