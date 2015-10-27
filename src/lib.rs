@@ -83,8 +83,8 @@ fn test_value_unwrap() {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Property<'a> {
-    name: Cow<'a, str>,
-    value: serde_json::Value,
+    pub name: Cow<'a, str>,
+    pub value: serde_json::Value,
 }
 
 impl<'a> Property<'a> {
