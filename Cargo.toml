@@ -1,6 +1,6 @@
 [package]
 name = "avro"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["Jordan Miner <jminer7@gmail.com>"]
 description = "A Rust implementation of Apache Avro"
 repository = "https://github.com/jminer/rust-avro"
@@ -8,4 +8,5 @@ license = "Apache-2.0/MIT"
 readme = "README.md"
 
 [dependencies]
+regex = "0.1.48"
 serde_json = "0.6"
