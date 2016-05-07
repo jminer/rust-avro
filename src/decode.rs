@@ -45,11 +45,12 @@ fn decode_var_len_u64<R: Read>(reader: &mut R) -> Result<u64, DecodeError> {
     let mut num = 0;
     let mut i = 0;
     loop {
-        if i >= 10 {
-            return Err(DecodeError { kind: DecodeErrorKind::IntegerOverflow })
-        }
         let mut buf = [0u8; 1];
         try!(reader.read_exact(&mut buf));
+        // If the 10th byte has any of bits 1 to 6 set or the high bit set, report an error
+        if i >= 9 && buf[0] & 0b1111_1110 != 0 { // 10th byte
+            return Err(DecodeError { kind: DecodeErrorKind::IntegerOverflow });
+        }
         num |= (buf[0] as u64 & 0b0111_1111) << (i * 7);
         if buf[0] & 0b1000_0000 == 0 {
             break;
@@ -184,6 +185,19 @@ fn test_decode_ints() {
     assert_eq!(decode(&mut &b"\x84\x02"[..], &Schema::Int).unwrap(), Value::Int(130));
     assert_eq!(decode(&mut &b"\x83\x02"[..], &Schema::Int).unwrap(), Value::Int(-130));
     assert_eq!(decode(&mut &b"\x84\x02"[..], &Schema::Long).unwrap(), Value::Long(130));
+
+    assert_eq!(decode_var_len_u64(&mut &b"\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x01"[..]).unwrap(),
+               u64::max_value());
+    let result = decode_var_len_u64(&mut &b"\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x03"[..]);
+    if let Err(DecodeError { kind: DecodeErrorKind::IntegerOverflow }) = result {
+    } else {
+        panic!("expected IntegerOverflow: {:?}", result);
+    }
+    let result = decode_var_len_u64(&mut &b"\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF\x81"[..]);
+    if let Err(DecodeError { kind: DecodeErrorKind::IntegerOverflow }) = result {
+    } else {
+        panic!("expected IntegerOverflow: {:?}", result);
+    }
 }
 
 #[test]
