@@ -18,7 +18,6 @@ use super::{Value, Schema};
 #[derive(Debug)]
 pub enum DecodeErrorKind {
     ReadFailed(io::Error),
-    UnexpectedEof,
     InvalidBoolean,
     IntegerOverflow,
     NegativeLength,
@@ -42,20 +41,6 @@ impl From<FromUtf8Error> for DecodeError {
     }
 }
 
-// TODO: delete and switch over to Read::read_exact() when it is marked stable in Rust
-fn read_exact<R: Read>(reader: &mut R, buf: &mut [u8]) -> Result<(), DecodeError> {
-    let mut index = 0;
-    let len = buf.len(); // borrow checker workaround
-    while index < len {
-        let read_count = try!(reader.read(&mut buf[index..len]));
-        index += read_count;
-        if read_count == 0 {
-            return Err(DecodeError { kind: DecodeErrorKind::UnexpectedEof });
-        }
-    };
-    Ok(())
-}
-
 fn decode_var_len_u64<R: Read>(reader: &mut R) -> Result<u64, DecodeError> {
     let mut num = 0;
     let mut i = 0;
@@ -64,7 +49,7 @@ fn decode_var_len_u64<R: Read>(reader: &mut R) -> Result<u64, DecodeError> {
             return Err(DecodeError { kind: DecodeErrorKind::IntegerOverflow })
         }
         let mut buf = [0u8; 1];
-        try!(read_exact(reader, &mut buf));
+        try!(reader.read_exact(&mut buf));
         num |= (buf[0] as u64 & 0b0111_1111) << (i * 7);
         if buf[0] & 0b1000_0000 == 0 {
             break;
@@ -100,7 +85,7 @@ pub fn decode<'a, R: Read>(reader: &mut R, schema: &Schema<'a>)
         &Schema::Null => Ok(Value::Null),
         &Schema::Boolean => {
             let mut buf = [0u8; 1];
-            try!(read_exact(reader, &mut buf[..]));
+            try!(reader.read_exact(&mut buf[..]));
             match buf[0] {
                 0 => Ok(Value::Boolean(false)),
                 1 => Ok(Value::Boolean(true)),
@@ -120,12 +105,12 @@ pub fn decode<'a, R: Read>(reader: &mut R, schema: &Schema<'a>)
         },
         &Schema::Float => {
             let mut buf = [0u8; 4];
-            try!(read_exact(reader, &mut buf[..]));
+            try!(reader.read_exact(&mut buf[..]));
             Ok(Value::Float(unsafe { mem::transmute(buf) }))
         },
         &Schema::Double => {
             let mut buf = [0u8; 8];
-            try!(read_exact(reader, &mut buf[..]));
+            try!(reader.read_exact(&mut buf[..]));
             Ok(Value::Double(unsafe { mem::transmute(buf) }))
         },
         &Schema::Bytes => {
@@ -135,7 +120,7 @@ pub fn decode<'a, R: Read>(reader: &mut R, schema: &Schema<'a>)
                     return Err(DecodeError { kind: DecodeErrorKind::NegativeLength });
                 }
                 let mut val: Vec<u8> = repeat(0).take(len as usize).collect();
-                try!(read_exact(reader, &mut val));
+                try!(reader.read_exact(&mut val));
                 Ok(Value::Bytes(Cow::Owned(val)))
             } else {
                 panic!("decode returned invalid value");
@@ -148,7 +133,7 @@ pub fn decode<'a, R: Read>(reader: &mut R, schema: &Schema<'a>)
                     return Err(DecodeError { kind: DecodeErrorKind::NegativeLength });
                 }
                 let mut val: Vec<u8> = repeat(0).take(len as usize).collect();
-                try!(read_exact(reader, &mut val));
+                try!(reader.read_exact(&mut val));
                 Ok(Value::String(try!(String::from_utf8(val)).into()))
             } else {
                 panic!("decode returned invalid value");
@@ -174,7 +159,7 @@ pub fn decode<'a, R: Read>(reader: &mut R, schema: &Schema<'a>)
         //Schema::Union { tys } => ,
         &Schema::Fixed(ref inner_schema) => {
             let mut val: Vec<u8> = repeat(0).take(inner_schema.size).collect();
-            try!(read_exact(reader, &mut val));
+            try!(reader.read_exact(&mut val));
             Ok(Value::Fixed(inner_schema.clone(), Cow::Owned(val)))
         },
         _ => unimplemented!(),
