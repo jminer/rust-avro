@@ -7,6 +7,60 @@
  * except according to those terms.
  */
 
+use std::io;
+use std::io::Write;
+
+#[derive(Debug)]
+pub enum EncodeErrorKind {
+    WriteFailed(io::Error),
+}
+
+#[derive(Debug)]
+pub struct EncodeError {
+    pub kind: EncodeErrorKind,
+}
+
+impl From<io::Error> for EncodeError {
+    fn from(err: io::Error) -> EncodeError {
+        EncodeError { kind: EncodeErrorKind::WriteFailed(err) }
+    }
+}
+
+pub fn encode_var_len_u64<W: Write>(writer: &mut W, mut num: u64) -> Result<(), EncodeError> {
+    loop {
+        let mut b = (num & 0b0111_1111) as u8;
+        num >>= 7;
+        if num == 0 {
+            try!(writer.write(&[b]));
+            break;
+        }
+        b |= 0b1000_0000;
+        try!(writer.write(&[b]));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_encode_var_len_u64() {
+    let mut vec = vec![];
+
+    encode_var_len_u64(&mut vec, 3).unwrap();
+    assert_eq!(&vec, &b"\x03");
+    vec.clear();
+
+    encode_var_len_u64(&mut vec, 128).unwrap();
+    assert_eq!(&vec, &b"\x80\x01");
+    vec.clear();
+
+    encode_var_len_u64(&mut vec, 130).unwrap();
+    assert_eq!(&vec, &b"\x82\x01");
+    vec.clear();
+
+    encode_var_len_u64(&mut vec, 944261).unwrap();
+    assert_eq!(&vec, &b"\x85\xD1\x39");
+    vec.clear();
+}
+
 pub fn encode_zig_zag(num: i64) -> u64 {
     // compiles to (num << 1) ^ (num >> 63)
     if num < 0 {

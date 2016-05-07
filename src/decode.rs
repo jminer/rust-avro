@@ -41,7 +41,7 @@ impl From<FromUtf8Error> for DecodeError {
     }
 }
 
-fn decode_var_len_u64<R: Read>(reader: &mut R) -> Result<u64, DecodeError> {
+pub fn decode_var_len_u64<R: Read>(reader: &mut R) -> Result<u64, DecodeError> {
     let mut num = 0;
     let mut i = 0;
     loop {

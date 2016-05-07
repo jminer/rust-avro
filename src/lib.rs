@@ -23,9 +23,11 @@ pub use idl::parse_idl;
 pub use decode::DecodeError;
 pub use decode::{
     decode,
+    decode_var_len_u64,
     decode_zig_zag,
 };
 pub use encode::{
+    encode_var_len_u64,
     encode_zig_zag,
 };
 
