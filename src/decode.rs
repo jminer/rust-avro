@@ -74,7 +74,9 @@ fn decode_var_len_u64<R: Read>(reader: &mut R) -> Result<u64, DecodeError> {
     Ok(num)
 }
 
-fn decode_zig_zag(num: u64) -> i64 {
+pub fn decode_zig_zag(num: u64) -> i64 {
+    // This compiles to (num << 63 as i64) >> 63 ^ (num >> 1), which I came up with as a
+    // way to avoid the branch before I looked at the disassembly.
     if num & 1 == 1 {
         !(num >> 1) as i64
     } else {

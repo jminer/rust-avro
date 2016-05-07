@@ -15,12 +15,19 @@ use std::rc::Rc;
 
 mod idl;
 mod decode;
+mod encode;
 
 pub use idl::Lexer;
 pub use idl::IdlError;
 pub use idl::parse_idl;
 pub use decode::DecodeError;
-pub use decode::decode;
+pub use decode::{
+    decode,
+    decode_zig_zag,
+};
+pub use encode::{
+    encode_zig_zag,
+};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Value<'a, 'b> {
