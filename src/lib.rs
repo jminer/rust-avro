@@ -20,8 +20,9 @@ mod encode;
 pub use idl::Lexer;
 pub use idl::IdlError;
 pub use idl::parse_idl;
-pub use decode::DecodeError;
 pub use decode::{
+    DecodeError,
+    DecodeErrorKind,
     decode,
     decode_var_len_u64,
     decode_zig_zag,
