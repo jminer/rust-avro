@@ -1,6 +1,6 @@
 [package]
 name = "avro"
-version = "0.2.0"
+version = "0.2.1"
 authors = ["Jordan Miner <jminer7@gmail.com>"]
 description = "A Rust implementation of Apache Avro"
 repository = "https://github.com/jminer/rust-avro"
