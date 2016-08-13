@@ -1,3 +1,4 @@
+# https://www.hoverbear.org/2015/03/07/rust-travis-github-pages/
 language: rust
 rust:
 - stable
