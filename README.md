@@ -6,6 +6,8 @@ An implementation of Avro for Rust.
     [dependencies]
     avro = { git = "https://github.com/jminer/rust-avro" }
 
+[Documentation](http://jminer.github.io/rust-avro/avro/index.html)
+
 ## Status
 
 My motivation for this project is decoding binary log messages sent from a C application. Rather than invent a new format, I started a general Avro library. Therefore, there isn't yet support for reading JSON protocol (.avpr) files or encoding Avro data. Features:
