@@ -30,6 +30,7 @@ pub use decode::{
 pub use encode::{
     encode_var_len_u64,
     encode_zig_zag,
+    encode
 };
 
 #[derive(Debug, Clone, PartialEq)]
