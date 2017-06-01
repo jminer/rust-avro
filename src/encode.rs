@@ -124,7 +124,7 @@ pub fn encode<W: Write>(writer: &mut W, schema: &Schema, value: &Value) -> Resul
         },
         (&Schema::String, _) => Err(EncodeError { kind: EncodeErrorKind::InvalidSchema }),
 
-        (&Schema::Enum(ref inner_schema), &Value::Enum(ref value_schema, num)) => {
+        (&Schema::Enum(_), &Value::Enum(_, num)) => {
             try!(encode(writer, &Schema::Int, &Value::Int(num as i32)));
             Ok(())
         },
@@ -133,7 +133,7 @@ pub fn encode<W: Write>(writer: &mut W, schema: &Schema, value: &Value) -> Resul
         //Schema::Array { items } => ,
         //Schema::Map { values } => ,
         //Schema::Union { tys } => ,
-        (&Schema::Record(ref inner_schema), &Value::Record(ref value_schema, ref fields)) => {
+        (&Schema::Record(_), &Value::Record(ref value_schema, ref fields)) => {
             for (field, value) in value_schema.fields.iter().zip(fields.iter()) {
                 try!(encode(writer, &field.ty, value));
             }
@@ -209,7 +209,7 @@ fn test_encode_record() {
         Value::Boolean(true)
     ]);
     let mut vec = vec![];
-    encode(&mut vec, &Schema::Record(schema), &value);
+    encode(&mut vec, &Schema::Record(schema), &value).unwrap();
 
     assert_eq!(&vec, &b"\xAE\x1F\x06\x52\x65\x64\x01");
     vec.clear();
